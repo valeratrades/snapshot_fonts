@@ -1,9 +1,8 @@
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
-use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
-use v_utils::xdg_cache_file;
+use std::process::{Command, Stdio};
 
 #[derive(Parser)]
 #[command(name = "snapshot_fonts")]
@@ -36,8 +35,6 @@ fn main() -> Result<()> {
 }
 
 fn generate_bars_font(output: &PathBuf) -> Result<()> {
-    let bdf_path = xdg_cache_file!("bars.bdf");
-
     let script = format!(
         r#"
 import fontforge
@@ -51,52 +48,33 @@ font.em = 1024
 font.ascent = 1024
 font.descent = 0
 
-# Create 256 glyphs for chars 0-255
 for i in range(256):
     glyph = font.createChar(i)
     glyph.width = 1024
-
-    # Fill height proportional to char code
-    if i == 0:
-        fill_height = 0
-    else:
-        fill_height = int((i / 255.0) * 1024)
-
+    fill_height = 0 if i == 0 else int((i / 255.0) * 1024)
     if fill_height > 0:
-        # Draw a rectangle from (0,0) to (1024, fill_height)
         pen = glyph.glyphPen()
         pen.moveTo((0, 0))
         pen.lineTo((1024, 0))
         pen.lineTo((1024, fill_height))
         pen.lineTo((0, fill_height))
         pen.closePath()
-        pen = None
 
 font.generate("{}")
-print("Generated {} with 256 glyphs")
 "#,
-        output.display(),
         output.display()
     );
 
-    // Write script to cache location
-    fs::create_dir_all(bdf_path.parent().unwrap())?;
-    let script_path = bdf_path.with_extension("py");
-    fs::write(&script_path, &script)?;
+    let mut child = Command::new("nix-shell")
+        .args(["-p", "fontforge", "--run", "fontforge -lang=py -script /dev/stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
 
-    // Run fontforge
-    let status = Command::new("nix-shell")
-        .args([
-            "-p",
-            "fontforge",
-            "--run",
-            &format!("fontforge -lang=py -script {}", script_path.display()),
-        ])
-        .status()?;
+    child.stdin.take().unwrap().write_all(script.as_bytes())?;
 
-    // Clean up
-    fs::remove_file(&script_path).ok();
-
+    let status = child.wait()?;
     if status.success() {
         println!("Generated {}", output.display());
     } else {
