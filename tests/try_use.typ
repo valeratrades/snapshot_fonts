@@ -1,22 +1,20 @@
 //NB: don't forget to compile with `--font-path .`
 #set page(width: auto, height: auto, margin: 1em)
 
-// Helper to render a bar at a given fill level (0-255)
-#let bar(level, size: 24pt) = {
-  text(font: "FillLevels", fallback: false, size: size, str.from-unicode(level))
+// Two-bar glyph: char_code = left * 251 + right (with surrogate skip)
+// left and right are 0-250
+#let bars(left, right, size: 24pt) = {
+  let code = left * 251 + right
+  if code >= 0xD800 { code += 2048 }
+  text(font: "FillLevels", fallback: false, size: size, str.from-unicode(code))
 }
 
-= Fill Level Font Test
+= Fill Level Font Test (Two Bars Per Char)
 
-== Bar chart (values: 255, 200, 128, 64, 32):
-#bar(255)#bar(200)#bar(128)#bar(64)#bar(32)
+== Sample pairs:
+#bars(250, 250) #bars(250, 125) #bars(125, 250) #bars(200, 50) #bars(50, 200)
 
-== Gradient (every 16th level from 0 to 255):
-#for i in range(0, 256, step: 16) {
-  bar(i)
-}#bar(255)
-
-== gradient every 4th:
-#for i in range(0, 256, step: 4) {
-  bar(i)
+== 4-step; towards each other
+#for i in range(0, 251, step: 4) {
+  bars(i, 250 - i)
 }

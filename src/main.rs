@@ -1,85 +1,109 @@
+use std::{
+	io::Write,
+	path::PathBuf,
+	process::{Command, Stdio},
+};
+
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
-use std::io::Write;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
 
 #[derive(Parser)]
 #[command(name = "snapshot_fonts")]
 #[command(about = "Generate special-purpose fonts")]
 struct Cli {
-    #[command(subcommand)]
-    command: Commands,
+	#[command(subcommand)]
+	command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Generate a font with 256 fill-level bar glyphs (chars 0-255)
-    Bars {
-        /// Output path for the TTF file
-        #[arg(short, long)]
-        output: PathBuf,
-    },
+	/// Generate a font with 256 fill-level bar glyphs (chars 0-255)
+	Bars {
+		/// Output path for the TTF file
+		#[arg(short, long)]
+		output: PathBuf,
+	},
 }
 
 fn main() -> Result<()> {
-    color_eyre::install()?;
+	color_eyre::install()?;
 
-    let cli = Cli::parse();
+	let cli = Cli::parse();
 
-    match cli.command {
-        Commands::Bars { output } => generate_bars_font(&output)?,
-    }
+	match cli.command {
+		Commands::Bars { output } => generate_bars_font(&output)?,
+	}
 
-    Ok(())
+	Ok(())
 }
 
 fn generate_bars_font(output: &PathBuf) -> Result<()> {
-    let script = format!(
-        r#"
+	// 251 × 251 = 63,001 glyphs (two bars per char, each 0-250 height)
+	// Char code = left * 251 + right, skipping surrogate range 0xD800-0xDFFF
+	let script = format!(
+		r#"
 import fontforge
 
 font = fontforge.font()
 font.fontname = "FillLevels"
 font.familyname = "FillLevels"
 font.fullname = "FillLevels Regular"
-font.encoding = "UnicodeBMP"
+font.encoding = "UnicodeFull"
 font.em = 1024
 font.ascent = 1024
 font.descent = 0
 
-for i in range(256):
-    glyph = font.createChar(i)
-    glyph.width = 1024
-    fill_height = 0 if i == 0 else int((i / 255.0) * 1024)
-    if fill_height > 0:
+LEVELS = 251
+SURROGATE_START = 0xD800
+SURROGATE_LEN = 2048
+
+for left in range(LEVELS):
+    for right in range(LEVELS):
+        char_code = left * LEVELS + right
+        if char_code >= SURROGATE_START:
+            char_code += SURROGATE_LEN
+        glyph = font.createChar(char_code)
+        glyph.width = 1024
+
+        left_height = int((left / 250.0) * 1024)
+        right_height = int((right / 250.0) * 1024)
+
         pen = glyph.glyphPen()
-        pen.moveTo((0, 0))
-        pen.lineTo((1024, 0))
-        pen.lineTo((1024, fill_height))
-        pen.lineTo((0, fill_height))
-        pen.closePath()
+        if left_height > 0:
+            pen.moveTo((0, 0))
+            pen.lineTo((512, 0))
+            pen.lineTo((512, left_height))
+            pen.lineTo((0, left_height))
+            pen.closePath()
+
+        if right_height > 0:
+            pen.moveTo((512, 0))
+            pen.lineTo((1024, 0))
+            pen.lineTo((1024, right_height))
+            pen.lineTo((512, right_height))
+            pen.closePath()
+        pen = None
 
 font.generate("{}")
 "#,
-        output.display()
-    );
+		output.display()
+	);
 
-    let mut child = Command::new("nix-shell")
-        .args(["-p", "fontforge", "--run", "fontforge -lang=py -script /dev/stdin"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+	let mut child = Command::new("nix-shell")
+		.args(["-p", "fontforge", "--run", "fontforge -lang=py -script /dev/stdin"])
+		.stdin(Stdio::piped())
+		.stdout(Stdio::null())
+		.stderr(Stdio::null())
+		.spawn()?;
 
-    child.stdin.take().unwrap().write_all(script.as_bytes())?;
+	child.stdin.take().unwrap().write_all(script.as_bytes())?;
 
-    let status = child.wait()?;
-    if status.success() {
-        println!("Generated {}", output.display());
-    } else {
-        color_eyre::eyre::bail!("fontforge failed");
-    }
+	let status = child.wait()?;
+	if status.success() {
+		println!("Generated {}", output.display());
+	} else {
+		color_eyre::eyre::bail!("fontforge failed");
+	}
 
-    Ok(())
+	Ok(())
 }
