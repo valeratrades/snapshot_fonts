@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["filter_nulls","strip_nulls"]};

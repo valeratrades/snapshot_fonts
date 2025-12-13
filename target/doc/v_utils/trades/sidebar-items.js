@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"mod":["klines","pair","side","timeframe","timestamp","usd"]};

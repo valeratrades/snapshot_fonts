@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["LogDestination"],"fn":["init_subscriber"]};

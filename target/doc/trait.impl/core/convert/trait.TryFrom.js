@@ -1,9 +1,0 @@
-(function() {
-    var implementors = Object.fromEntries([["v_utils",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/convert/trait.TryFrom.html\" title=\"trait core::convert::TryFrom\">TryFrom</a>&lt;&amp;<a class=\"primitive\" href=\"https://doc.rust-lang.org/nightly/std/primitive.str.html\">str</a>&gt; for <a class=\"struct\" href=\"v_utils/trades/pair/struct.Pair.html\" title=\"struct v_utils::trades::pair::Pair\">Pair</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/convert/trait.TryFrom.html\" title=\"trait core::convert::TryFrom\">TryFrom</a>&lt;<a class=\"struct\" href=\"https://doc.rust-lang.org/nightly/alloc/string/struct.String.html\" title=\"struct alloc::string::String\">String</a>&gt; for <a class=\"struct\" href=\"v_utils/trades/pair/struct.Pair.html\" title=\"struct v_utils::trades::pair::Pair\">Pair</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/convert/trait.TryFrom.html\" title=\"trait core::convert::TryFrom\">TryFrom</a>&lt;<a class=\"struct\" href=\"v_utils/other/percent/struct.Percent.html\" title=\"struct v_utils::other::percent::Percent\">Percent</a>&gt; for <a class=\"struct\" href=\"v_utils/other/percent/struct.PercentS.html\" title=\"struct v_utils::other::percent::PercentS\">PercentS</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/convert/trait.TryFrom.html\" title=\"trait core::convert::TryFrom\">TryFrom</a>&lt;<a class=\"struct\" href=\"v_utils/other/percent/struct.Percent.html\" title=\"struct v_utils::other::percent::Percent\">Percent</a>&gt; for <a class=\"struct\" href=\"v_utils/other/percent/struct.PercentU.html\" title=\"struct v_utils::other::percent::PercentU\">PercentU</a>"]]]]);
-    if (window.register_implementors) {
-        window.register_implementors(implementors);
-    } else {
-        window.pending_implementors = implementors;
-    }
-})()
-//{"start":57,"fragment_lengths":[1698]}

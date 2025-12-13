@@ -1,9 +1,0 @@
-(function() {
-    var implementors = Object.fromEntries([["v_utils",[["impl&lt;__derive_more_Rhs&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/arith/trait.DivAssign.html\" title=\"trait core::ops::arith::DivAssign\">DivAssign</a>&lt;__derive_more_Rhs&gt; for <a class=\"struct\" href=\"v_utils/other/percent/struct.Percent.html\" title=\"struct v_utils::other::percent::Percent\">Percent</a><div class=\"where\">where\n    <a class=\"primitive\" href=\"https://doc.rust-lang.org/nightly/std/primitive.f64.html\">f64</a>: <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/arith/trait.DivAssign.html\" title=\"trait core::ops::arith::DivAssign\">DivAssign</a>&lt;__derive_more_Rhs&gt;,</div>"],["impl&lt;__derive_more_Rhs&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/arith/trait.DivAssign.html\" title=\"trait core::ops::arith::DivAssign\">DivAssign</a>&lt;__derive_more_Rhs&gt; for <a class=\"struct\" href=\"v_utils/trades/usd/struct.Usd.html\" title=\"struct v_utils::trades::usd::Usd\">Usd</a><div class=\"where\">where\n    <a class=\"primitive\" href=\"https://doc.rust-lang.org/nightly/std/primitive.f64.html\">f64</a>: <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/arith/trait.DivAssign.html\" title=\"trait core::ops::arith::DivAssign\">DivAssign</a>&lt;__derive_more_Rhs&gt;,</div>"]]]]);
-    if (window.register_implementors) {
-        window.register_implementors(implementors);
-    } else {
-        window.pending_implementors = implementors;
-    }
-})()
-//{"start":57,"fragment_lengths":[1333]}
