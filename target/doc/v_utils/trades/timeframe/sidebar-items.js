@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["TimeframeDesignator"],"struct":["Timeframe","TimeframeDesignatorIter"]};

@@ -1,0 +1,2 @@
+createSrcSidebar('[["v_utils",["",[["io",[],["cli.rs","expanded_path.rs","files.rs","mod.rs","progress_bar.rs","xdg.rs"]],["other",[],["mod.rs","now_then.rs","percent.rs","pretty.rs","time.rs"]],["trades",[],["klines.rs","mod.rs","pair.rs","side.rs","timeframe.rs","timestamp.rs","usd.rs"]],["utils",[],["eyre.rs","format.rs","mod.rs","serde.rs","snapshots.rs","tracing.rs"]]],["lib.rs","prelude.rs"]]]]');
+//{"start":19,"fragment_lengths":[383]}

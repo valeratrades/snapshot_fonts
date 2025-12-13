@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["home_dir","xdg_cache_fallback","xdg_config_fallback","xdg_data_fallback","xdg_runtime_fallback","xdg_state_fallback"]};

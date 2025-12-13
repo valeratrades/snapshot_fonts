@@ -21,5 +21,6 @@ get_last_with_len = "allow"
 
 
 [dependencies]
-derive-new = "^0"
+clap = { version = "^4", features = ["derive"] }
 color-eyre = "^0.6.3"
+v_utils = "^2"

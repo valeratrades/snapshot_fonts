@@ -1,0 +1,9 @@
+(function() {
+    var implementors = Object.fromEntries([["v_utils",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/deref/trait.DerefMut.html\" title=\"trait core::ops::deref::DerefMut\">DerefMut</a> for <a class=\"struct\" href=\"v_utils/other/percent/struct.Percent.html\" title=\"struct v_utils::other::percent::Percent\">Percent</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/deref/trait.DerefMut.html\" title=\"trait core::ops::deref::DerefMut\">DerefMut</a> for <a class=\"struct\" href=\"v_utils/trades/klines/struct.Close.html\" title=\"struct v_utils::trades::klines::Close\">Close</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/deref/trait.DerefMut.html\" title=\"trait core::ops::deref::DerefMut\">DerefMut</a> for <a class=\"struct\" href=\"v_utils/trades/klines/struct.Kline.html\" title=\"struct v_utils::trades::klines::Kline\">Kline</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/deref/trait.DerefMut.html\" title=\"trait core::ops::deref::DerefMut\">DerefMut</a> for <a class=\"struct\" href=\"v_utils/trades/pair/struct.Asset.html\" title=\"struct v_utils::trades::pair::Asset\">Asset</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/ops/deref/trait.DerefMut.html\" title=\"trait core::ops::deref::DerefMut\">DerefMut</a> for <a class=\"struct\" href=\"v_utils/trades/usd/struct.Usd.html\" title=\"struct v_utils::trades::usd::Usd\">Usd</a>"]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":57,"fragment_lengths":[1468]}

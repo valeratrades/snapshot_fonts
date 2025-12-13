@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["cli","expanded_path","files","progress_bar","xdg"]};

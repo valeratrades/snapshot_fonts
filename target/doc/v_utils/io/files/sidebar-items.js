@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["OpenMode"],"fn":["open","open_with_mode","sync_file_with_git"]};

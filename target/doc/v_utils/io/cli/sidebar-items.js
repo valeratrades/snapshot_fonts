@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ConfirmAllResult"],"fn":["confirm_all_blocking","confirm_blocking"]};

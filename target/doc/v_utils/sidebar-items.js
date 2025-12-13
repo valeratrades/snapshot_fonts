@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"externcrate":["macros"],"macro":["clientside","define_str_enum","elog","fmt_with_width","log","xdg_cache_dir","xdg_cache_file","xdg_config_dir","xdg_config_file","xdg_data_dir","xdg_data_file","xdg_runtime_dir","xdg_runtime_file","xdg_state_dir","xdg_state_file"],"mod":["io","other","prelude","trades","utils"]};
