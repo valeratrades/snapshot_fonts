@@ -12,6 +12,10 @@ clap = { version = "^4", features = ["derive"] }
 color-eyre = "^0.6.3"
 v_utils = "^2"
 
+[dev-dependencies]
+insta = "^1"
+v_utils = { version = "^2", features = ["distributions"] }
+
 [lints.clippy]
 # Stable
 float_cmp = "allow" # is bad for `==` direct comparisons, but `<` and `>` should be allowed
