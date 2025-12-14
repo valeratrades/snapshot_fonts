@@ -47,9 +47,7 @@
             rustPlatform = pkgs.makeRustPlatform {
               inherit rustc cargo stdenv;
             };
-          in
-          {
-            default = rustPlatform.buildRustPackage rec {
+            snapshot_fonts_bin = rustPlatform.buildRustPackage rec {
               inherit pname;
               version = manifest.version;
 
@@ -61,10 +59,13 @@
               cargoLock.lockFile = ./Cargo.lock;
               src = pkgs.lib.cleanSource ./.;
             };
+          in
+          {
+            inherit snapshot_fonts_bin;
 
-            fill-levels-font = pkgs.runCommand "fill-levels-font"
+            default = pkgs.runCommand "fill-levels-font"
               {
-                nativeBuildInputs = [ self.packages.${system}.default pkgs.fontforge ];
+                nativeBuildInputs = [ snapshot_fonts_bin pkgs.fontforge ];
               } ''
               mkdir -p $out/share/fonts/truetype
               snapshot_fonts bars --output $out/share/fonts/truetype/FillLevels.ttf
