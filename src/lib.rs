@@ -91,8 +91,38 @@ for left in range(LEVELS):
         pen = None
 
 font.generate("{output}")
+"#,
+		levels = LEVELS,
+		pua_start = PUA_START,
+		output = output.display()
+	);
 
-# fontforge ignores metric settings during TTF generation, so fix with fonttools
+	// Step 1: Generate font with fontforge
+	let mut child = Command::new("fontforge")
+		.args(["-lang=py", "-script", "/dev/stdin"])
+		.stdin(Stdio::piped())
+		.stdout(Stdio::null())
+		.stderr(Stdio::null())
+		.spawn()
+		.or_else(|_| {
+			Command::new("nix-shell")
+				.args(["-p", "fontforge", "--run", "fontforge -lang=py -script /dev/stdin"])
+				.stdin(Stdio::piped())
+				.stdout(Stdio::null())
+				.stderr(Stdio::null())
+				.spawn()
+		})?;
+
+	child.stdin.take().unwrap().write_all(script.as_bytes())?;
+
+	let status = child.wait()?;
+	if !status.success() {
+		return Err(std::io::Error::other("fontforge failed"));
+	}
+
+	// Step 2: Fix vertical metrics with fonttools (fontforge ignores our settings)
+	let fix_metrics_script = format!(
+		r#"
 from fontTools.ttLib import TTFont
 tt = TTFont("{output}")
 tt['hhea'].ascent = 1024
@@ -106,32 +136,25 @@ tt['OS/2'].usWinDescent = 0
 tt['OS/2'].fsSelection |= 0x80  # USE_TYPO_METRICS
 tt.save("{output}")
 "#,
-		levels = LEVELS,
-		pua_start = PUA_START,
 		output = output.display()
 	);
 
-	// Try fontforge directly first (works in nix build), fall back to nix-shell (works in dev)
-	// fonttools is needed to fix vertical metrics that fontforge ignores
-	let mut child = Command::new("fontforge")
-		.args(["-lang=py", "-script", "/dev/stdin"])
-		.stdin(Stdio::piped())
-		.stdout(Stdio::null())
-		.stderr(Stdio::null())
-		.spawn()
-		.or_else(|_| {
-			Command::new("nix-shell")
-				.args(["-p", "fontforge", "python3Packages.fonttools", "--run", "fontforge -lang=py -script /dev/stdin"])
-				.stdin(Stdio::piped())
-				.stdout(Stdio::null())
-				.stderr(Stdio::null())
-				.spawn()
-		})?;
+	let status = Command::new("python3").args(["-c", &fix_metrics_script]).status().or_else(|_| {
+		Command::new("nix-shell")
+			.args([
+				"-p",
+				"python3Packages.fonttools",
+				"--run",
+				&format!("python3 -c '{}'", fix_metrics_script.replace('\'', "'\"'\"'")),
+			])
+			.status()
+	})?;
 
-	child.stdin.take().unwrap().write_all(script.as_bytes())?;
-
-	let status = child.wait()?;
-	if status.success() { Ok(()) } else { Err(std::io::Error::other("fontforge failed")) }
+	if status.success() {
+		Ok(())
+	} else {
+		Err(std::io::Error::other("fonttools metrics fix failed"))
+	}
 }
 
 // ============================================================================
