@@ -2,30 +2,40 @@ use std::{
 	io::Write,
 	path::Path,
 	process::{Command, Stdio},
+	sync::OnceLock,
 };
 
 pub const LEVELS: u16 = 251;
-pub const SURROGATE_START: u32 = 0xd800;
-pub const SURROGATE_LEN: u32 = 2048;
+/// Start of Private Use Area - Plane 15 (PUA-A)
+pub const PUA_START: u32 = 0xf0000;
 
-/// Encode two bar values (0-250 each) into a Unicode codepoint
+/// Standard Unicode block characters for fallback mode (8 levels)
+const FALLBACK_BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// Check if FillLevels font is available on the system
+fn font_available() -> bool {
+	static AVAILABLE: OnceLock<bool> = OnceLock::new();
+	*AVAILABLE.get_or_init(|| {
+		Command::new("fc-list")
+			.args([":", "family"])
+			.output()
+			.map(|o| String::from_utf8_lossy(&o.stdout).contains("FillLevels"))
+			.unwrap_or(false)
+	})
+}
+
+/// Encode two bar values (0-250 each) into a Unicode codepoint in PUA-A (Plane 15)
 pub fn encode_bars(left: u8, right: u8) -> char {
 	debug_assert!(left <= 250, "left must be 0-250");
 	debug_assert!(right <= 250, "right must be 0-250");
 
-	let mut code = left as u32 * LEVELS as u32 + right as u32;
-	if code >= SURROGATE_START {
-		code += SURROGATE_LEN;
-	}
+	let code = PUA_START + left as u32 * LEVELS as u32 + right as u32;
 	char::from_u32(code).expect("valid codepoint")
 }
 
 /// Decode a Unicode codepoint back to two bar values
 pub fn decode_bars(c: char) -> (u8, u8) {
-	let mut code = c as u32;
-	if code >= SURROGATE_START + SURROGATE_LEN {
-		code -= SURROGATE_LEN;
-	}
+	let code = c as u32 - PUA_START;
 	let left = (code / LEVELS as u32) as u8;
 	let right = (code % LEVELS as u32) as u8;
 	(left, right)
@@ -47,14 +57,11 @@ font.ascent = 1024
 font.descent = 0
 
 LEVELS = {levels}
-SURROGATE_START = 0xD800
-SURROGATE_LEN = 2048
+PUA_START = {pua_start}
 
 for left in range(LEVELS):
     for right in range(LEVELS):
-        char_code = left * LEVELS + right
-        if char_code >= SURROGATE_START:
-            char_code += SURROGATE_LEN
+        char_code = PUA_START + left * LEVELS + right
         glyph = font.createChar(char_code)
         glyph.width = 1024
 
@@ -80,6 +87,7 @@ for left in range(LEVELS):
 font.generate("{output}")
 "#,
 		levels = LEVELS,
+		pua_start = PUA_START,
 		output = output.display()
 	);
 
@@ -106,31 +114,48 @@ font.generate("{output}")
 }
 
 // ============================================================================
-// Snapshot plotting using FillLevels font (251 levels per row)
+// Snapshot plotting - uses FillLevels font (251 levels) or fallback (8 levels)
 // ============================================================================
-
-const LEVELS_PER_ROW: usize = 251;
-
-struct PlotData {
-	scale: f64,
-	offset: f64,
-}
 
 static SINGLE_PLOT_WIDTH: usize = 90;
 static SINGLE_PLOT_HEIGHT: usize = 12;
 
+struct PlotData {
+	scale: f64,
+	offset: f64,
+	levels_per_row: usize,
+	use_font: bool,
+}
+
 impl PlotData {
-	fn new(min_val: f64, max_val: f64, height: usize) -> Self {
+	fn new(min_val: f64, max_val: f64, height: usize, use_font: bool) -> Self {
+		// Font: 251 levels (0-250), Fallback: 9 levels (0-8)
+		let levels_per_row = if use_font { 251 } else { 9 };
 		let data_range = max_val - min_val;
-		let plot_range = (height * LEVELS_PER_ROW) as f64;
+		let plot_range = (height * levels_per_row) as f64;
 		let scale = plot_range / data_range;
 		let offset = min_val * scale;
-		PlotData { scale, offset }
+		PlotData {
+			scale,
+			offset,
+			levels_per_row,
+			use_font,
+		}
 	}
 
 	fn get_level(&self, val: f64, row: usize) -> u8 {
 		let scaled_val = val * self.scale - self.offset;
-		(scaled_val - row as f64 * LEVELS_PER_ROW as f64).clamp(0.0, 250.0) as u8
+		// Max index: 250 for font, 8 for fallback
+		let max_level = (self.levels_per_row - 1) as f64;
+		(scaled_val - row as f64 * self.levels_per_row as f64).clamp(0.0, max_level) as u8
+	}
+
+	fn level_to_char(&self, level: u8) -> char {
+		if self.use_font { encode_bars(level, level) } else { FALLBACK_BLOCKS[level as usize] }
+	}
+
+	fn empty_char(&self) -> char {
+		if self.use_font { encode_bars(0, 0) } else { ' ' }
 	}
 
 	/// Raise by the smallest step
@@ -186,19 +211,26 @@ impl SnapshotP {
 	/// # Panics
 	/// Meant to be used only in tests, so if any input params are incorrect we panic.
 	pub fn draw(self) -> String {
-		let main_section = Self::plot_p(self.prices, self.width, self.height);
-		let mut out = main_section;
+		let use_font = font_available();
+		let header = if use_font {
+			String::new()
+		} else {
+			"# fallback (no FillLevels.ttf font located)\n".to_string()
+		};
+		let main_section = Self::plot_p(self.prices, self.width, self.height, use_font);
+		let mut out = format!("{header}{main_section}");
 		if let Some(secondary_pane) = self.secondary_pane {
 			let separator = "─".repeat(self.width);
-			let secondary_section = Self::plot_p_optional(secondary_pane, self.width, (self.height * 3) / 5);
+			let secondary_section = Self::plot_p_optional(secondary_pane, self.width, (self.height * 3) / 5, use_font);
 			out.push_str(&format!("\n{separator}\n{secondary_section}"));
 		}
 		out
 	}
 
-	fn plot_p_optional(prices: Vec<Option<f64>>, width: usize, height: usize) -> String {
+	fn plot_p_optional(prices: Vec<Option<f64>>, width: usize, height: usize, use_font: bool) -> String {
+		let empty_char = if use_font { encode_bars(0, 0) } else { ' ' };
 		if prices.is_empty() {
-			return (0..height).map(|_| encode_bars(0, 0).to_string().repeat(width)).collect::<Vec<_>>().join("\n");
+			return (0..height).map(|_| empty_char.to_string().repeat(width)).collect::<Vec<_>>().join("\n");
 		}
 		let non_empty_prices = prices.iter().filter_map(|x| *x).collect::<Vec<f64>>();
 
@@ -223,10 +255,10 @@ impl SnapshotP {
 		side_panel.pop(); // remove last newline
 
 		if (max_val - min_val).abs() < f64::EPSILON {
-			return (0..height).map(|_| encode_bars(0, 0).to_string().repeat(width)).collect::<Vec<_>>().join("\n");
+			return (0..height).map(|_| empty_char.to_string().repeat(width)).collect::<Vec<_>>().join("\n");
 		}
 
-		let mut plot_data = PlotData::new(min_val, max_val, height);
+		let mut plot_data = PlotData::new(min_val, max_val, height, use_font);
 		plot_data.raise_plot(); // here we always want to raise to be able to distinguish between empty and non-empty prices
 
 		let mut plot = Vec::with_capacity(height);
@@ -237,9 +269,9 @@ impl SnapshotP {
 					match prices[index] {
 						Some(val) => {
 							let level = plot_data.get_level(val, row);
-							encode_bars(level, level) // mirror left/right for secondary pane
+							plot_data.level_to_char(level)
 						}
-						None => encode_bars(0, 0),
+						None => plot_data.empty_char(),
 					}
 				})
 				.collect();
@@ -249,15 +281,16 @@ impl SnapshotP {
 		join_str_blocks_v(plot.join("\n"), side_panel)
 	}
 
-	fn plot_p(prices: Vec<f64>, width: usize, height: usize) -> String {
+	fn plot_p(prices: Vec<f64>, width: usize, height: usize, use_font: bool) -> String {
 		if prices.is_empty() {
 			panic!("prices are empty");
 		}
 
 		let min_val = prices.iter().fold(f64::INFINITY, |a, &b| a.min(b));
 		let max_val = prices.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+		let mid_char = if use_font { encode_bars(125, 125) } else { '▄' };
 		if (max_val - min_val).abs() < f64::EPSILON {
-			return (0..height).map(|_| encode_bars(125, 125).to_string().repeat(width)).collect::<Vec<_>>().join("\n");
+			return (0..height).map(|_| mid_char.to_string().repeat(width)).collect::<Vec<_>>().join("\n");
 		}
 
 		let min_step = (max_val - min_val) / 100.0;
@@ -277,7 +310,7 @@ impl SnapshotP {
 		}
 		side_panel.pop(); // remove last newline
 
-		let mut plot_data = PlotData::new(min_val, max_val, height);
+		let mut plot_data = PlotData::new(min_val, max_val, height, use_font);
 
 		// Check if we need to raise the plot
 		let first_level = plot_data.get_level(prices[0], height - 1);
@@ -294,7 +327,7 @@ impl SnapshotP {
 					let index = (j as f64 * prices.len() as f64 / width as f64) as usize;
 					let val = prices[index];
 					let level = plot_data.get_level(val, row);
-					encode_bars(level, level) // mirror left/right
+					plot_data.level_to_char(level)
 				})
 				.collect();
 			plot.push(row_str);
@@ -348,18 +381,19 @@ mod tests {
 			for right in [0, 1, 125, 249, 250] {
 				let c = encode_bars(left, right);
 				let (l, r) = decode_bars(c);
-				assert_eq!((left, right), (l, r), "roundtrip failed for ({}, {})", left, right);
+				assert_eq!((left, right), (l, r), "roundtrip failed for ({left}, {right})");
 			}
 		}
 	}
 
 	#[test]
-	fn test_encode_surrogate_skip() {
-		// Code 55296 (0xD800) should be skipped
-		// left=220, right=1: 220*251 + 1 = 55221 (before surrogate)
-		// left=220, right=76: 220*251 + 76 = 55296 (would be surrogate, should skip)
-		let c = encode_bars(220, 76);
-		assert!(c as u32 >= SURROGATE_START + SURROGATE_LEN, "should skip surrogate range");
+	fn test_encode_pua_range() {
+		// All codepoints should be in PUA-A range (U+F0000 - U+FFFFD)
+		let min = encode_bars(0, 0);
+		let max = encode_bars(250, 250);
+		assert_eq!(min as u32, PUA_START, "min should be PUA_START");
+		assert_eq!(max as u32, PUA_START + 250 * 251 + 250, "max should be PUA_START + 63000");
+		assert!(max as u32 <= 0xffffd, "should not exceed PUA-A range");
 	}
 
 	#[test]
@@ -367,7 +401,20 @@ mod tests {
 		let data = laplace_random_walk(100.0, 1000, 0.1, 0.0, Some(42));
 		let plot = SnapshotP::build(&data).draw();
 
-		assert_snapshot!(plot, @"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0⩔墘慴㸄\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x00103.50\n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0喤\0\0︘︘︘︘\u{f248}눬࿀\u{a950}밄稐\0\0\0\0\0\0\0\0\0\0\0\0      \n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0蛜︘鞘ꕠ︘︘︘︘︘︘︘︘︘︘咨\0\0\0\0\0\0\0䷄\u{a950}杜簈      \n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0瀸慴︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘鞘障Ꝙ㘤\0\0⍰︘︘︘︘      \n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0钤辸︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘臰뻸︘︘︘︘︘      \n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\u{ed5c}︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘      \n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0⍰\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0㴈\0\0\0\0\0\0\0\0菨猬ហ笌\0\0\0\0\0\0\0\0\0Ⴜ︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘      \n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0鲄\u{e870}︘喤ᢜ\0\0\0\0\0\0\0\0\0⁼ᖨ\0\0邴︘쓠稐\0\0\0ߠ\0\u{e384}︘︘︘︘ᦘ\0馐\0\0\0\0䟜钤︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘      \nㄸ劰\0\0䗤\0\0\0\0\0\0\0\0\0\0\0猬︘︘︘︘︘톬\0\0\0\0\0긼댨뻸︘︘뿴넰︘︘︘︘걄验ꍨ︘힔︘︘︘︘︘︘톬︘웘\0⹄ϰ︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘      \n︘︘䧔觐︘봀넰\0劰\0\0\0\0\0\0\0︘︘︘︘︘︘︘춼\0풠ﬤ鎨︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘굀︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘      \n︘︘︘︘︘︘︘\u{f53c}︘뻸嚠\0ߠ\0\0뷼︘︘︘︘︘︘︘︘砘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘      \n︘︘︘︘︘︘︘︘︘︘︘짌︘먌킰︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘98.73");
+		assert_snapshot!(plot, @r"
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󲩔󵢘󶅴󳸄󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀103.50
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󵖤󰀀󰀀󿘘󿘘󿘘󿘘󾩈󻈬󰿀󺥐󻰄󷨐󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󸛜󿘘󹞘󺕠󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󵒨󰀀󰀀󰀀󰀀󰀀󰀀󰀀󴷄󺥐󶝜󷰈      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󷀸󶅴󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󹞘󹚜󺝘󳘤󰀀󰀀󲍰󿘘󿘘󿘘󿘘      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󹒤󸾸󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󸇰󻻸󿘘󿘘󿘘󿘘󿘘      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󾕜󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󲍰󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󳴈󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󸏨󷌬󱞠󷬌󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󱂼󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󹲄󾁰󿘘󵖤󱢜󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󲁼󱖨󰀀󰀀󹂴󿘘󼓠󷨐󰀀󰀀󰀀󰟠󰀀󽮄󿘘󿘘󿘘󿘘󱦘󰀀󹦐󰀀󰀀󰀀󰀀󴟜󹒤󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘      
+		󳄸󵊰󰀀󰀀󴗤󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󷌬󿘘󿘘󿘘󿘘󿘘󽆬󰀀󰀀󰀀󰀀󰀀󺸼󻌨󻻸󿘘󿘘󻿴󻄰󿘘󿘘󿘘󿘘󺱄󹪌󺍨󿘘󽞔󿘘󿘘󿘘󿘘󿘘󿘘󽆬󿘘󼛘󰀀󲹄󰏰󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘      
+		󿘘󿘘󴧔󸧐󿘘󻴀󻄰󰀀󵊰󰀀󰀀󰀀󰀀󰀀󰀀󰀀󿘘󿘘󿘘󿘘󿘘󿘘󿘘󼶼󰀀󽒠󿌤󹎨󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󺵀󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘      
+		󿘘󿘘󿘘󿘘󿘘󿘘󿘘󾴼󿘘󻻸󵚠󰀀󰟠󰀀󰀀󻷼󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󷠘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘      
+		󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󼧌󿘘󻨌󽂰󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘98.73
+		");
 	}
 
 	#[test]
@@ -394,6 +441,27 @@ mod tests {
 			orders.push((*o, order));
 		}
 		let plot = snapshot_plot_orders(&prices, &orders);
-		insta::assert_snapshot!(plot, @"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0⩔墘慴㸄\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x00103.50\n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0喤\0\0︘︘︘︘\u{f248}눬࿀\u{a950}밄稐\0\0\0\0\0\0\0\0\0\0\0\0      \n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0蛜︘鞘ꕠ︘︘︘︘︘︘︘︘︘︘咨\0\0\0\0\0\0\0䷄\u{a950}杜簈      \n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0瀸慴︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘鞘障Ꝙ㘤\0\0⍰︘︘︘︘      \n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0钤辸︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘臰뻸︘︘︘︘︘      \n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\u{ed5c}︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘      \n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0⍰\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0㴈\0\0\0\0\0\0\0\0菨猬ហ笌\0\0\0\0\0\0\0\0\0Ⴜ︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘      \n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0鲄\u{e870}︘喤ᢜ\0\0\0\0\0\0\0\0\0⁼ᖨ\0\0邴︘쓠稐\0\0\0ߠ\0\u{e384}︘︘︘︘ᦘ\0馐\0\0\0\0䟜钤︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘      \nㄸ劰\0\0䗤\0\0\0\0\0\0\0\0\0\0\0猬︘︘︘︘︘톬\0\0\0\0\0긼댨뻸︘︘뿴넰︘︘︘︘걄验ꍨ︘힔︘︘︘︘︘︘톬︘웘\0⹄ϰ︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘      \n︘︘䧔觐︘봀넰\0劰\0\0\0\0\0\0\0︘︘︘︘︘︘︘춼\0풠ﬤ鎨︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘굀︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘      \n︘︘︘︘︘︘︘\u{f53c}︘뻸嚠\0ߠ\0\0뷼︘︘︘︘︘︘︘︘砘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘      \n︘︘︘︘︘︘︘︘︘︘︘짌︘먌킰︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘98.73\n──────────────────────────────────────────────────────────────────────────────────────────\n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0辸辸辸辸辸辸辸辸辸辸辸辸辸辸辸︘︘︘︘︘︘︘︘︘︘︘︘︘︘\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x00101.80\n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0扰扰扰扰扰扰扰扰扰扰扰扰扰扰︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0      \n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0      \n\0\0\0\0\0\0\0\0쳀엜엜뿴뿴뿴뿴︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0      \n\0\0\0\0\0\0\0\0︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0      \n\0\0\0\0\0\0\0\0︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0      \n\0\0\0\0\0\0\0\0︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘︘\0\0\0㌰㌰㌰㌰㌰㌰㌰㌰㌰üüüüüüüüüüüüüüüüüüüü97.82");
+		insta::assert_snapshot!(plot, @r"
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󲩔󵢘󶅴󳸄󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀103.50
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󵖤󰀀󰀀󿘘󿘘󿘘󿘘󾩈󻈬󰿀󺥐󻰄󷨐󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󸛜󿘘󹞘󺕠󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󵒨󰀀󰀀󰀀󰀀󰀀󰀀󰀀󴷄󺥐󶝜󷰈      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󷀸󶅴󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󹞘󹚜󺝘󳘤󰀀󰀀󲍰󿘘󿘘󿘘󿘘      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󹒤󸾸󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󸇰󻻸󿘘󿘘󿘘󿘘󿘘      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󾕜󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󲍰󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󳴈󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󸏨󷌬󱞠󷬌󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󱂼󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󹲄󾁰󿘘󵖤󱢜󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󲁼󱖨󰀀󰀀󹂴󿘘󼓠󷨐󰀀󰀀󰀀󰟠󰀀󽮄󿘘󿘘󿘘󿘘󱦘󰀀󹦐󰀀󰀀󰀀󰀀󴟜󹒤󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘      
+		󳄸󵊰󰀀󰀀󴗤󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󷌬󿘘󿘘󿘘󿘘󿘘󽆬󰀀󰀀󰀀󰀀󰀀󺸼󻌨󻻸󿘘󿘘󻿴󻄰󿘘󿘘󿘘󿘘󺱄󹪌󺍨󿘘󽞔󿘘󿘘󿘘󿘘󿘘󿘘󽆬󿘘󼛘󰀀󲹄󰏰󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘      
+		󿘘󿘘󴧔󸧐󿘘󻴀󻄰󰀀󵊰󰀀󰀀󰀀󰀀󰀀󰀀󰀀󿘘󿘘󿘘󿘘󿘘󿘘󿘘󼶼󰀀󽒠󿌤󹎨󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󺵀󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘      
+		󿘘󿘘󿘘󿘘󿘘󿘘󿘘󾴼󿘘󻻸󵚠󰀀󰟠󰀀󰀀󻷼󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󷠘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘      
+		󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󼧌󿘘󻨌󽂰󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘98.73
+		──────────────────────────────────────────────────────────────────────────────────────────
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󸾸󸾸󸾸󸾸󸾸󸾸󸾸󸾸󸾸󸾸󸾸󸾸󸾸󸾸󸾸󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀101.80
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󶉰󶉰󶉰󶉰󶉰󶉰󶉰󶉰󶉰󶉰󶉰󶉰󶉰󶉰󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󼳀󼗜󼗜󻿴󻿴󻿴󻿴󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀      
+		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󿘘󰀀󰀀󰀀󳌰󳌰󳌰󳌰󳌰󳌰󳌰󳌰󳌰󰃼󰃼󰃼󰃼󰃼󰃼󰃼󰃼󰃼󰃼󰃼󰃼󰃼󰃼󰃼󰃼󰃼󰃼󰃼󰃼97.82
+		");
 	}
 }
