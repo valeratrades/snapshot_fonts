@@ -2,7 +2,6 @@ use std::{
 	io::Write,
 	path::Path,
 	process::{Command, Stdio},
-	sync::OnceLock,
 };
 
 pub const LEVELS: u16 = 251;
@@ -11,18 +10,6 @@ pub const PUA_START: u32 = 0xf0000;
 
 /// Standard Unicode block characters for fallback mode (8 levels)
 const FALLBACK_BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
-/// Check if FillLevels font is available on the system
-fn font_available() -> bool {
-	static AVAILABLE: OnceLock<bool> = OnceLock::new();
-	*AVAILABLE.get_or_init(|| {
-		Command::new("fc-list")
-			.args([":", "family"])
-			.output()
-			.map(|o| String::from_utf8_lossy(&o.stdout).contains("FillLevels"))
-			.unwrap_or(false)
-	})
-}
 
 /// Encode two bar values (0-250 each) into a Unicode codepoint in PUA-A (Plane 15)
 pub fn encode_bars(left: u8, right: u8) -> char {
@@ -170,6 +157,7 @@ pub struct SnapshotP {
 	secondary_pane: Option<Vec<Option<f64>>>,
 	width: usize,
 	height: usize,
+	fallback: bool,
 }
 
 impl SnapshotP {
@@ -179,7 +167,13 @@ impl SnapshotP {
 			secondary_pane: None,
 			width: SINGLE_PLOT_WIDTH,
 			height: SINGLE_PLOT_HEIGHT,
+			fallback: false,
 		}
+	}
+
+	/// Use fallback mode with standard Unicode block characters (8 levels) instead of FillLevels font (251 levels)
+	pub fn fallback(self, fallback: bool) -> Self {
+		SnapshotP { fallback, ..self }
 	}
 
 	/// Height is always 2/5 that of the main pane
@@ -211,14 +205,9 @@ impl SnapshotP {
 	/// # Panics
 	/// Meant to be used only in tests, so if any input params are incorrect we panic.
 	pub fn draw(self) -> String {
-		let use_font = font_available();
-		let header = if use_font {
-			String::new()
-		} else {
-			"# fallback (no FillLevels.ttf font located)\n".to_string()
-		};
+		let use_font = !self.fallback;
 		let main_section = Self::plot_p(self.prices, self.width, self.height, use_font);
-		let mut out = format!("{header}{main_section}");
+		let mut out = main_section;
 		if let Some(secondary_pane) = self.secondary_pane {
 			let separator = "─".repeat(self.width);
 			let secondary_section = Self::plot_p_optional(secondary_pane, self.width, (self.height * 3) / 5, use_font);
@@ -350,7 +339,7 @@ fn join_str_blocks_v(left: String, right: String) -> String {
 ///
 /// # Architecture
 /// Uses [SnapshotP] to build the plot, for finer control use it instead.
-pub fn snapshot_plot_orders<T: Into<f64> + Copy>(prices: &[T], orders: &[(usize, Option<T>)]) -> String {
+pub fn snapshot_plot_orders<T: Into<f64> + Copy>(prices: &[T], orders: &[(usize, Option<T>)], fallback: bool) -> String {
 	let prices = prices.iter().map(|x| (*x).into()).collect::<Vec<f64>>();
 	let orders = orders.iter().map(|(i, x)| (*i, x.map(|x| x.into()))).collect::<Vec<(usize, Option<f64>)>>();
 	assert!(orders.iter().all(|(i, _)| *i < prices.len()));
@@ -364,7 +353,7 @@ pub fn snapshot_plot_orders<T: Into<f64> + Copy>(prices: &[T], orders: &[(usize,
 	}
 	order_points.extend((last_order.0..prices.len()).map(|_| last_order.1));
 
-	SnapshotP::build(&prices).secondary_pane_optional(order_points).draw()
+	SnapshotP::build(&prices).secondary_pane_optional(order_points).fallback(fallback).draw()
 }
 
 #[cfg(test)]
@@ -399,7 +388,7 @@ mod tests {
 	#[test]
 	fn test_snapshot_plot_p() {
 		let data = laplace_random_walk(100.0, 1000, 0.1, 0.0, Some(42));
-		let plot = SnapshotP::build(&data).draw();
+		let plot = SnapshotP::build(&data).fallback(true).draw();
 
 		assert_snapshot!(plot, @r"
 		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󲩔󵢘󶅴󳸄󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀103.50
@@ -440,7 +429,7 @@ mod tests {
 			};
 			orders.push((*o, order));
 		}
-		let plot = snapshot_plot_orders(&prices, &orders);
+		let plot = snapshot_plot_orders(&prices, &orders, false);
 		insta::assert_snapshot!(plot, @r"
 		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󲩔󵢘󶅴󳸄󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀103.50
 		󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󵖤󰀀󰀀󿘘󿘘󿘘󿘘󾩈󻈬󰿀󺥐󻰄󷨐󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀󰀀      
