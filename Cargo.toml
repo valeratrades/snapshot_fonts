@@ -1,4 +1,5 @@
 cargo-features = ["codegen-backend"]
+
 [package]
 name = "snapshot_fonts"
 version = "0.1.0"

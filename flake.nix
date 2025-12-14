@@ -28,7 +28,7 @@
           inherit pkgs;
           lastSupportedVersion = "nightly-2025-12-12";
           jobsErrors = [ "rust-tests" ];
-          jobsWarnings = [ "rust-doc" "rust-clippy" "rust-machete" "rust-sorted" "rust-sorted-derives" "rust-unused-features" "tokei" ];
+          jobsWarnings = [ "rust-doc" "rust-clippy" "rust-machete" "rust-sorted" "rust-sorted-derives" "tokei" ];
           jobsOther = [ "loc-badge" ];
         };
         readme = v-utils.readme-fw {
