@@ -91,6 +91,20 @@ for left in range(LEVELS):
         pen = None
 
 font.generate("{output}")
+
+# fontforge ignores metric settings during TTF generation, so fix with fonttools
+from fontTools.ttLib import TTFont
+tt = TTFont("{output}")
+tt['hhea'].ascent = 1024
+tt['hhea'].descent = 0
+tt['hhea'].lineGap = 0
+tt['OS/2'].sTypoAscender = 1024
+tt['OS/2'].sTypoDescender = 0
+tt['OS/2'].sTypoLineGap = 0
+tt['OS/2'].usWinAscent = 1024
+tt['OS/2'].usWinDescent = 0
+tt['OS/2'].fsSelection |= 0x80  # USE_TYPO_METRICS
+tt.save("{output}")
 "#,
 		levels = LEVELS,
 		pua_start = PUA_START,
@@ -98,6 +112,7 @@ font.generate("{output}")
 	);
 
 	// Try fontforge directly first (works in nix build), fall back to nix-shell (works in dev)
+	// fonttools is needed to fix vertical metrics that fontforge ignores
 	let mut child = Command::new("fontforge")
 		.args(["-lang=py", "-script", "/dev/stdin"])
 		.stdin(Stdio::piped())
@@ -106,7 +121,7 @@ font.generate("{output}")
 		.spawn()
 		.or_else(|_| {
 			Command::new("nix-shell")
-				.args(["-p", "fontforge", "--run", "fontforge -lang=py -script /dev/stdin"])
+				.args(["-p", "fontforge", "python3Packages.fonttools", "--run", "fontforge -lang=py -script /dev/stdin"])
 				.stdin(Stdio::piped())
 				.stdout(Stdio::null())
 				.stderr(Stdio::null())
