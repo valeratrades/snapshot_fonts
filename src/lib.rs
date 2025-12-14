@@ -54,14 +54,22 @@ font.os2_winascent = 1024
 font.os2_windescent = 0
 font.os2_use_typo_metrics = True
 
+# Mark as monospace font
+font.os2_panose = (2, 11, 5, 9, 2, 2, 3, 2, 2, 7)  # panose[3]=9 means monospace
+font.is_quadratic = True
+
 LEVELS = {levels}
 PUA_START = {pua_start}
+
+# Match typical monospace font width ratio (DejaVu Sans Mono: 1233/2048 = 0.602)
+GLYPH_WIDTH = 616  # ~60% of em for proper monospace cell alignment
+HALF_WIDTH = GLYPH_WIDTH // 2
 
 for left in range(LEVELS):
     for right in range(LEVELS):
         char_code = PUA_START + left * LEVELS + right
         glyph = font.createChar(char_code)
-        glyph.width = 1024
+        glyph.width = GLYPH_WIDTH
 
         left_height = int((left / 250.0) * 1024)
         right_height = int((right / 250.0) * 1024)
@@ -69,16 +77,16 @@ for left in range(LEVELS):
         pen = glyph.glyphPen()
         if left_height > 0:
             pen.moveTo((0, 0))
-            pen.lineTo((512, 0))
-            pen.lineTo((512, left_height))
+            pen.lineTo((HALF_WIDTH, 0))
+            pen.lineTo((HALF_WIDTH, left_height))
             pen.lineTo((0, left_height))
             pen.closePath()
 
         if right_height > 0:
-            pen.moveTo((512, 0))
-            pen.lineTo((1024, 0))
-            pen.lineTo((1024, right_height))
-            pen.lineTo((512, right_height))
+            pen.moveTo((HALF_WIDTH, 0))
+            pen.lineTo((GLYPH_WIDTH, 0))
+            pen.lineTo((GLYPH_WIDTH, right_height))
+            pen.lineTo((HALF_WIDTH, right_height))
             pen.closePath()
         pen = None
 
