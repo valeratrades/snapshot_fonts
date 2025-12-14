@@ -65,11 +65,7 @@
 
             default = pkgs.runCommand "fill-levels-font"
               {
-                nativeBuildInputs = [
-                  snapshot_fonts_bin
-                  pkgs.fontforge
-                  (pkgs.python3.withPackages (ps: [ ps.fonttools ]))
-                ];
+                nativeBuildInputs = [ snapshot_fonts_bin pkgs.fontforge ];
               } ''
               mkdir -p $out/share/fonts/truetype
               snapshot_fonts bars --output $out/share/fonts/truetype/FillLevels.ttf
@@ -107,6 +103,8 @@
               openssl
               pkg-config
               rust
+              fontforge
+              uv
             ] ++ pre-commit-check.enabledPackages;
 
             env.RUST_BACKTRACE = 1;

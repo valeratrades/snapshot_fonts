@@ -90,14 +90,27 @@ for left in range(LEVELS):
             pen.closePath()
         pen = None
 
+# Force metrics by opening and re-saving (fontforge sometimes ignores pre-generate settings)
 font.generate("{output}")
+
+# Re-open and force the metrics
+font2 = fontforge.open("{output}")
+font2.hhea_ascent = 1024
+font2.hhea_descent = 0
+font2.hhea_linegap = 0
+font2.os2_typoascent = 1024
+font2.os2_typodescent = 0
+font2.os2_typolinegap = 0
+font2.os2_winascent = 1024
+font2.os2_windescent = 0
+font2.os2_use_typo_metrics = True
+font2.generate("{output}")
 "#,
 		levels = LEVELS,
 		pua_start = PUA_START,
 		output = output.display()
 	);
 
-	// Step 1: Generate font with fontforge
 	let mut child = Command::new("fontforge")
 		.args(["-lang=py", "-script", "/dev/stdin"])
 		.stdin(Stdio::piped())
@@ -116,45 +129,7 @@ font.generate("{output}")
 	child.stdin.take().unwrap().write_all(script.as_bytes())?;
 
 	let status = child.wait()?;
-	if !status.success() {
-		return Err(std::io::Error::other("fontforge failed"));
-	}
-
-	// Step 2: Fix vertical metrics with fonttools (fontforge ignores our settings)
-	let fix_metrics_script = format!(
-		r#"
-from fontTools.ttLib import TTFont
-tt = TTFont("{output}")
-tt['hhea'].ascent = 1024
-tt['hhea'].descent = 0
-tt['hhea'].lineGap = 0
-tt['OS/2'].sTypoAscender = 1024
-tt['OS/2'].sTypoDescender = 0
-tt['OS/2'].sTypoLineGap = 0
-tt['OS/2'].usWinAscent = 1024
-tt['OS/2'].usWinDescent = 0
-tt['OS/2'].fsSelection |= 0x80  # USE_TYPO_METRICS
-tt.save("{output}")
-"#,
-		output = output.display()
-	);
-
-	let status = Command::new("python3").args(["-c", &fix_metrics_script]).status().or_else(|_| {
-		Command::new("nix-shell")
-			.args([
-				"-p",
-				"python3Packages.fonttools",
-				"--run",
-				&format!("python3 -c '{}'", fix_metrics_script.replace('\'', "'\"'\"'")),
-			])
-			.status()
-	})?;
-
-	if status.success() {
-		Ok(())
-	} else {
-		Err(std::io::Error::other("fonttools metrics fix failed"))
-	}
+	if status.success() { Ok(()) } else { Err(std::io::Error::other("fontforge failed")) }
 }
 
 // ============================================================================
