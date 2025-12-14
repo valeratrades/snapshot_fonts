@@ -1,9 +1,12 @@
-cargo-features = ["codegen-backend"]
-
 [package]
 name = "snapshot_fonts"
 version = "0.1.0"
 edition = "2024"
+description = "High-resolution terminal bar charts using custom PUA fonts (251 levels per half-character)"
+license = "BlueOak-1.0.0"
+repository = "https://github.com/valeratrades/snapshot_fonts"
+keywords = ["terminal", "charts", "visualization", "unicode", "font"]
+categories = ["command-line-utilities", "visualization"]
 
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
