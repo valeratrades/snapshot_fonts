@@ -83,12 +83,21 @@ font.generate("{output}")
 		output = output.display()
 	);
 
-	let mut child = Command::new("nix-shell")
-		.args(["-p", "fontforge", "--run", "fontforge -lang=py -script /dev/stdin"])
+	// Try fontforge directly first (works in nix build), fall back to nix-shell (works in dev)
+	let mut child = Command::new("fontforge")
+		.args(["-lang=py", "-script", "/dev/stdin"])
 		.stdin(Stdio::piped())
 		.stdout(Stdio::null())
 		.stderr(Stdio::null())
-		.spawn()?;
+		.spawn()
+		.or_else(|_| {
+			Command::new("nix-shell")
+				.args(["-p", "fontforge", "--run", "fontforge -lang=py -script /dev/stdin"])
+				.stdin(Stdio::piped())
+				.stdout(Stdio::null())
+				.stderr(Stdio::null())
+				.spawn()
+		})?;
 
 	child.stdin.take().unwrap().write_all(script.as_bytes())?;
 
@@ -100,146 +109,239 @@ font.generate("{output}")
 	}
 }
 
-/// Plot data helper for scaling values to 0-250 range
-struct PlotScaler {
+// ============================================================================
+// Snapshot plotting (copied from v_utils/snapshots.rs)
+// ============================================================================
+
+struct PlotData {
 	scale: f64,
 	offset: f64,
+	blocks: [char; 9],
 }
 
-impl PlotScaler {
-	fn new(min_val: f64, max_val: f64) -> Self {
+static SINGLE_PLOT_WIDTH: usize = 90;
+static SINGLE_PLOT_HEIGHT: usize = 12;
+
+impl PlotData {
+	fn new(min_val: f64, max_val: f64, height: usize) -> Self {
 		let data_range = max_val - min_val;
-		let scale = 250.0 / data_range;
-		let offset = min_val;
-		PlotScaler { scale, offset }
+		let plot_range = (height * 8) as f64;
+		let scale = plot_range / data_range;
+		let offset = min_val * scale;
+		let blocks = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+		PlotData { scale, offset, blocks }
 	}
 
-	fn to_level(&self, val: f64) -> u8 {
-		((val - self.offset) * self.scale).clamp(0.0, 250.0) as u8
+	fn get_block_index(&self, val: f64, i: usize) -> usize {
+		let scaled_val = val * self.scale - self.offset;
+		(scaled_val - i as f64 * 8.0).clamp(0.0, 8.0) as usize
+	}
+
+	/// Raise by the smallest step (▁)
+	fn raise_plot(&mut self) {
+		self.offset -= 1.0;
 	}
 }
 
-/// Snapshot builder for plotting data using the FillLevels font
-#[derive(Clone, Debug)]
-pub struct Snapshot {
-	values: Vec<f64>,
-	secondary: Option<Vec<Option<f64>>>,
+#[derive(Clone, Debug, Default)]
+pub struct SnapshotP {
+	prices: Vec<f64>,
+	secondary_pane: Option<Vec<Option<f64>>>,
 	width: usize,
+	height: usize,
 }
 
-impl Snapshot {
-	/// Create a new snapshot from a slice of values
-	pub fn new<T: Into<f64> + Copy>(values: &[T]) -> Self {
-		Snapshot {
-			values: values.iter().map(|x| (*x).into()).collect(),
-			secondary: None,
-			width: 90,
+impl SnapshotP {
+	pub fn build<T: Into<f64> + Copy>(prices: &[T]) -> Self {
+		SnapshotP {
+			prices: prices.iter().map(|x| (*x).into()).collect(),
+			secondary_pane: None,
+			width: SINGLE_PLOT_WIDTH,
+			height: SINGLE_PLOT_HEIGHT,
 		}
 	}
 
-	/// Add a secondary data series (plotted as the right bar)
-	pub fn secondary<T: Into<f64> + Copy>(mut self, values: &[T]) -> Self {
-		self.secondary = Some(values.iter().map(|x| Some((*x).into())).collect());
-		self
-	}
-
-	/// Add a secondary data series with optional values
-	pub fn secondary_optional<T: Into<f64> + Copy>(mut self, values: Vec<Option<T>>) -> Self {
-		self.secondary = Some(values.into_iter().map(|x| x.map(|v| v.into())).collect());
-		self
-	}
-
-	/// Set the output width in characters (default: 90)
-	pub fn width(mut self, width: usize) -> Self {
-		self.width = width;
-		self
-	}
-
-	/// Render to a string using FillLevels font encoding
-	/// Each character encodes two bars: left = primary data, right = secondary data (or same as left if no secondary)
-	pub fn render(&self) -> String {
-		if self.values.is_empty() {
-			return String::new();
+	/// Height is always 2/5 that of the main pane
+	pub fn secondary_pane_optional<T: Into<f64> + Copy>(self, secondary_pane: Vec<Option<T>>) -> Self {
+		SnapshotP {
+			secondary_pane: Some(secondary_pane.iter().map(|x| x.map(|x| x.into())).collect()),
+			..self
 		}
+	}
 
-		let min_val = self.values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-		let max_val = self.values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+	/// Height is always 2/5 that of the main pane
+	pub fn secondary_pane<T: Into<f64> + Copy>(self, secondary_pane: Vec<T>) -> Self {
+		SnapshotP {
+			secondary_pane: Some(secondary_pane.iter().map(|x| Some((*x).into())).collect()),
+			..self
+		}
+	}
+
+	/// Default width is `90`
+	pub fn width(self, width: usize) -> Self {
+		SnapshotP { width, ..self }
+	}
+
+	/// Set height of the main pane. Secondary pane's height is automatically determined. Default height is `12`
+	pub fn height_main_pane(self, height: usize) -> Self {
+		SnapshotP { height, ..self }
+	}
+
+	/// # Panics
+	/// Meant to be used only in tests, so if any input params are incorrect we panic.
+	pub fn draw(self) -> String {
+		let main_section = Self::plot_p(self.prices, self.width, self.height);
+		let mut out = main_section;
+		if let Some(secondary_pane) = self.secondary_pane {
+			let separator = "─".repeat(self.width);
+			let secondary_section = Self::plot_p_optional(secondary_pane, self.width, (self.height * 3) / 5);
+			out.push_str(&format!("\n{separator}\n{secondary_section}"));
+		}
+		out
+	}
+
+	fn plot_p_optional(prices: Vec<Option<f64>>, width: usize, height: usize) -> String {
+		if prices.is_empty() {
+			return " ".repeat(width).repeat(height);
+		}
+		let non_empty_prices = prices.iter().filter_map(|x| *x).collect::<Vec<f64>>();
+
+		let min_val = non_empty_prices.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+		let max_val = non_empty_prices.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+		let min_step = (max_val - min_val) / 100.0;
+		let f_len = min_step.to_string().split('.').collect::<Vec<&str>>()[1].chars().take_while(|&c| c == '0').count() + 1;
+		let max_str = format!("{:.f_len$}", max_val).trim_end_matches(".0").to_string();
+		let min_str = format!("{:.f_len$}", min_val).trim_end_matches(".0").to_string();
+		let side_panel_width = max_str.len().max(min_str.len());
+		let mut side_panel = String::with_capacity(height * side_panel_width);
+		for i in 0..height {
+			if i == 0 {
+				side_panel.push_str(&format!("{max_str}\n"));
+			} else if i == height - 1 {
+				side_panel.push_str(&format!("{min_str}\n"));
+			} else {
+				side_panel.push_str(&format!("{:>side_panel_width$}\n", " "));
+			}
+		}
+		side_panel.pop(); // remove last newline
 
 		if (max_val - min_val).abs() < f64::EPSILON {
-			// All values the same - render as mid-height bars
-			return (0..self.width).map(|_| encode_bars(125, 125)).collect();
+			return " ".repeat(width).repeat(height);
 		}
 
-		let scaler = PlotScaler::new(min_val, max_val);
+		let mut plot_data = PlotData::new(min_val, max_val, height);
+		plot_data.raise_plot(); // here we always want to raise to be able to distinguish between empty and non-empty prices
 
-		let secondary_scaler = self
-			.secondary
-			.as_ref()
-			.map(|sec| {
-				let sec_vals: Vec<f64> = sec.iter().filter_map(|x| *x).collect();
-				if sec_vals.is_empty() {
-					return None;
-				}
-				let sec_min = sec_vals.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-				let sec_max = sec_vals.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-				if (sec_max - sec_min).abs() < f64::EPSILON {
-					None
-				} else {
-					Some(PlotScaler::new(sec_min, sec_max))
-				}
-			})
-			.flatten();
-
-		(0..self.width)
-			.map(|j| {
-				let idx = (j as f64 * self.values.len() as f64 / self.width as f64) as usize;
-				let idx = idx.min(self.values.len() - 1);
-
-				let left = scaler.to_level(self.values[idx]);
-
-				let right = match (&self.secondary, &secondary_scaler) {
-					(Some(sec), Some(sec_scaler)) => {
-						let sec_idx = (j as f64 * sec.len() as f64 / self.width as f64) as usize;
-						let sec_idx = sec_idx.min(sec.len() - 1);
-						match sec[sec_idx] {
-							Some(v) => sec_scaler.to_level(v),
-							None => 0,
+		let mut plot = Vec::with_capacity(height);
+		for i in (0..height).rev() {
+			let row: String = (0..width)
+				.map(|j| {
+					let index = (j as f64 * prices.len() as f64 / width as f64) as usize;
+					match prices[index] {
+						Some(val) => {
+							let block_index = plot_data.get_block_index(val, i);
+							plot_data.blocks[block_index]
 						}
+						None => ' ',
 					}
-					(Some(sec), None) => {
-						// Secondary exists but has no range - use mid value or 0 for None
-						let sec_idx = (j as f64 * sec.len() as f64 / self.width as f64) as usize;
-						let sec_idx = sec_idx.min(sec.len() - 1);
-						match sec[sec_idx] {
-							Some(_) => 125,
-							None => 0,
-						}
-					}
-					(None, _) => left, // No secondary - mirror primary
-				};
-
-				encode_bars(left, right)
-			})
-			.collect()
-	}
-
-	/// Render with value annotations (min/max labels)
-	pub fn render_annotated(&self) -> String {
-		if self.values.is_empty() {
-			return String::new();
+				})
+				.collect();
+			plot.push(row);
 		}
 
-		let min_val = self.values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-		let max_val = self.values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-
-		let plot = self.render();
-		format!("{:.2}\n{}\n{:.2}", max_val, plot, min_val)
+		join_str_blocks_v(plot.join("\n"), side_panel)
 	}
+
+	fn plot_p(prices: Vec<f64>, width: usize, height: usize) -> String {
+		if prices.is_empty() {
+			panic!("prices are empty");
+		}
+
+		let min_val = prices.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+		let max_val = prices.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+		if (max_val - min_val).abs() < f64::EPSILON {
+			return " ".repeat(width).repeat(height);
+		}
+
+		let min_step = (max_val - min_val) / 100.0;
+		let f_len = min_step.to_string().split('.').collect::<Vec<&str>>()[1].chars().take_while(|&c| c == '0').count() + 1;
+		let max_str = format!("{:.f_len$}", max_val).trim_end_matches(".0").to_string();
+		let min_str = format!("{:.f_len$}", min_val).trim_end_matches(".0").to_string();
+		let side_panel_width = max_str.len().max(min_str.len());
+		let mut side_panel = String::with_capacity(height * side_panel_width);
+		for i in 0..height {
+			if i == 0 {
+				side_panel.push_str(&format!("{max_str}\n"));
+			} else if i == height - 1 {
+				side_panel.push_str(&format!("{min_str}\n"));
+			} else {
+				side_panel.push_str(&format!("{:>side_panel_width$}\n", " "));
+			}
+		}
+		side_panel.pop(); // remove last newline
+
+		let mut plot_data = PlotData::new(min_val, max_val, height);
+
+		// Check if we need to raise the plot
+		let first_block = plot_data.get_block_index(prices[0], height - 1);
+		let last_block = plot_data.get_block_index(prices[prices.len() - 1], height - 1);
+		if first_block == 0 || last_block == 0 {
+			plot_data.raise_plot();
+		}
+
+		let mut plot = Vec::with_capacity(height);
+
+		for i in (0..height).rev() {
+			let row: String = (0..width)
+				.map(|j| {
+					let index = (j as f64 * prices.len() as f64 / width as f64) as usize;
+					let val = prices[index];
+					let block_index = plot_data.get_block_index(val, i);
+					plot_data.blocks[block_index]
+				})
+				.collect();
+			plot.push(row);
+		}
+
+		join_str_blocks_v(plot.join("\n"), side_panel)
+	}
+}
+
+fn join_str_blocks_v(left: String, right: String) -> String {
+	assert_eq!(left.split('\n').count(), right.split('\n').count());
+	left.lines().zip(right.lines()).map(|(l, r)| format!("{}{}", l, r)).collect::<Vec<String>>().join("\n")
+}
+
+/// # Panics
+/// if ordinals on orders are outside of prices or not ascending.
+///
+/// # Blocker
+/// Until better fonts, distinctions between price formats, multiple order lines at a time & order types, actual timeframes, are all extremely problematic; so their implementation is postponed.
+///
+/// # Architecture
+/// Uses [SnapshotP] to build the plot, for finer control use it instead.
+pub fn snapshot_plot_orders<T: Into<f64> + Copy>(prices: &[T], orders: &[(usize, Option<T>)]) -> String {
+	let prices = prices.iter().map(|x| (*x).into()).collect::<Vec<f64>>();
+	let orders = orders.iter().map(|(i, x)| (*i, x.map(|x| x.into()))).collect::<Vec<(usize, Option<f64>)>>();
+	assert!(orders.iter().all(|(i, _)| *i < prices.len()));
+	assert!(orders.windows(2).all(|w| w[0].0 < w[1].0));
+
+	let mut order_points = Vec::with_capacity(prices.len());
+	let mut last_order: (usize, Option<f64>) = (0, None);
+	for (i, order) in orders.iter() {
+		order_points.extend((last_order.0..*i).map(|_| last_order.1));
+		last_order = (*i, *order);
+	}
+	order_points.extend((last_order.0..prices.len()).map(|_| last_order.1));
+
+	SnapshotP::build(&prices).secondary_pane_optional(order_points).draw()
 }
 
 #[cfg(test)]
 mod tests {
 	use insta::assert_snapshot;
+	use rand::{Rng, SeedableRng, rngs::StdRng};
 	use v_utils::distributions::laplace_random_walk;
 
 	use super::*;
@@ -265,43 +367,71 @@ mod tests {
 	}
 
 	#[test]
-	fn test_snapshot_linear_ramp() {
-		let data: Vec<f64> = (0..100).map(|i| i as f64).collect();
-		let rendered = Snapshot::new(&data).width(50).render();
-		assert_snapshot!(rendered, @"\0Ӭ\u{9d8}ໄᎰᢜᶈ≴❠ⱌㄸ㘤㬐㿼䓨䧔什厬墘嶄捬桘浄爰眜簈胴藠諌辸钤馐鹼ꍨꡔ굀눬뜘밄샰웘쯄킰햜\u{e288}\u{e774}\u{ec60}\u{f14c}\u{f638}ﬤ");
-	}
+	fn test_snapshot_plot_p() {
+		let data = laplace_random_walk(100.0, 1000, 0.1, 0.0, Some(42));
+		let plot = SnapshotP::build(&data).draw();
 
-	#[test]
-	fn test_snapshot_opposing() {
-		let primary: Vec<f64> = (0..100).map(|i| i as f64).collect();
-		let secondary: Vec<f64> = (0..100).map(|i| (99 - i) as f64).collect();
-		let rendered = Snapshot::new(&primary).secondary(&secondary).width(50).render();
-		assert_snapshot!(rendered, @"ùכઽྟᒁᥣṅ⌧⠉Ⳬ㇍㚯㮑䁳䕕䨷伙叻壝嶿掛桽浟牁眣簅胧藉誫辍鑯饑鸳ꌕꟷ곙놻뚝뭿쁡옽쬟퀁퓣隷");
-	}
-
-	#[test]
-	fn test_snapshot_random_walk() {
-		let data = laplace_random_walk(100.0, 500, 0.1, 0.0, Some(42));
-		let rendered = Snapshot::new(&data).width(80).render();
-		assert_snapshot!(rendered, @"諌裔稐扰眜汈苬苬縀稐敤縀嶄庀妔䳈䳈ㄸ䏬ⱌ⡜⭐〼⁼ר≴䋰笌縀鶀봀톬풠쓠쳀ꑤꍨ똜Ꙝ庀焴完䗤杜敤浄验瀸障鎨ꁴ颔넰딠댨먌긼뀴馐馐ꩌ싨춼쾴샰뀴ꁴ鲄ꁴ鹼넰렔봀ꭈ뷼");
-	}
-
-	#[test]
-	fn test_snapshot_random_walk_annotated() {
-		let data = laplace_random_walk(100.0, 500, 0.1, 0.0, Some(42));
-		let rendered = Snapshot::new(&data).width(80).render_annotated();
-		assert_snapshot!(rendered, @r"
-		100.98
-		諌裔稐扰眜汈苬苬縀稐敤縀嶄庀妔䳈䳈ㄸ䏬ⱌ⡜⭐〼⁼ר≴䋰笌縀鶀봀톬풠쓠쳀ꑤꍨ똜Ꙝ庀焴完䗤杜敤浄验瀸障鎨ꁴ颔넰딠댨먌긼뀴馐馐ꩌ싨춼쾴샰뀴ꁴ鲄ꁴ鹼넰렔봀ꭈ뷼
-		98.73
+		assert_snapshot!(plot, @r"
+		                                                                    ▂▃▄▃                  103.50
+		                                                                 ▃  █████▆▁▆▇▄                  
+		                                                                ▅█▅▆██████████▃       ▃▆▄▄      
+		                                                              ▄▄███████████████▅▅▆▂  ▂████      
+		                                                            ▅▅█████████████████████▅▇█████      
+		                                                           ███████████████████████████████      
+		                   ▂                ▂        ▅▄▁▄         ▁███████████████████████████████      
+		                 ▆██▃▁         ▂▁  ▅█▇▄   ▁ █████▁ ▅    ▃▅████████████████████████████████      
+		▂▃  ▃           ▄█████▇     ▆▆▇██▇▆████▆▅▆█▇██████▇█▇ ▂▁██████████████████████████████████      
+		██▃▅█▇▆ ▃       ███████▇ ▇█▅█████████████████████████▆████████████████████████████████████      
+		█████████▇▃ ▁  ▇████████▄█████████████████████████████████████████████████████████████████      
+		███████████▇█▇▇███████████████████████████████████████████████████████████████████████████98.73
 		");
 	}
 
 	#[test]
-	fn test_snapshot_with_secondary_optional() {
-		let primary = laplace_random_walk(100.0, 200, 0.1, 0.0, Some(42));
-		let secondary: Vec<Option<f64>> = (0..200).map(|i| if i % 3 == 0 { None } else { Some((i as f64).sin() * 50.0 + 100.0) }).collect();
-		let rendered = Snapshot::new(&primary).secondary_optional(secondary).width(60).render();
-		assert_snapshot!(rendered, @"雾鯥锈鑆觵臅禈碬腍碙碙繻褣蹀褶覠睑蒘玲粅葝择樌峭柮尥愚堾呒尪厔園㻢䘔䄦ㆠṥ⅖⠳⅞Ⰽ㐑⁗⍌ᖐעີⴚ䐿厧廙浽鉹ꑂ黖봻췦");
+	fn test_snapshot_plot_orders() {
+		let prices = laplace_random_walk(100.0, 1000, 0.1, 0.0, Some(42));
+		let n_orders = 10;
+		let mut orders_left_to_select = 10;
+		let mut order_ordinals = Vec::with_capacity(n_orders);
+		for i in 0..prices.len() {
+			let target_probability = orders_left_to_select as f64 / (prices.len() - i) as f64;
+			let mut rng = StdRng::seed_from_u64(i as u64);
+			if rng.random_range(0.0..1.0) < target_probability {
+				order_ordinals.push(i);
+				orders_left_to_select -= 1;
+			}
+		}
+		let order_prices = laplace_random_walk(100.0, n_orders, 1.0, 0.0, Some(4));
+		let mut orders = Vec::with_capacity(n_orders);
+		for (i, o) in order_ordinals.iter().enumerate() {
+			let order = match i == 6 || i == 7 {
+				true => None,
+				_ => Some(order_prices[i]),
+			};
+			orders.push((*o, order));
+		}
+		let plot = snapshot_plot_orders(&prices, &orders);
+		insta::assert_snapshot!(plot, @r"
+		                                                                    ▂▃▄▃                  103.50
+		                                                                 ▃  █████▆▁▆▇▄                  
+		                                                                ▅█▅▆██████████▃       ▃▆▄▄      
+		                                                              ▄▄███████████████▅▅▆▂  ▂████      
+		                                                            ▅▅█████████████████████▅▇█████      
+		                                                           ███████████████████████████████      
+		                   ▂                ▂        ▅▄▁▄         ▁███████████████████████████████      
+		                 ▆██▃▁         ▂▁  ▅█▇▄   ▁ █████▁ ▅    ▃▅████████████████████████████████      
+		▂▃  ▃           ▄█████▇     ▆▆▇██▇▆████▆▅▆█▇██████▇█▇ ▂▁██████████████████████████████████      
+		██▃▅█▇▆ ▃       ███████▇ ▇█▅█████████████████████████▆████████████████████████████████████      
+		█████████▇▃ ▁  ▇████████▄█████████████████████████████████████████████████████████████████      
+		███████████▇█▇▇███████████████████████████████████████████████████████████████████████████98.73
+		──────────────────────────────────────────────────────────────────────────────────────────
+		                             ▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅██████████████                                101.80
+		               ▄▄▄▄▄▄▄▄▄▄▄▄▄▄█████████████████████████████                                      
+		               ███████████████████████████████████████████                                      
+		        ▇▇▇▇▇▇▇███████████████████████████████████████████                                      
+		        ██████████████████████████████████████████████████                                      
+		        ██████████████████████████████████████████████████                                      
+		        ██████████████████████████████████████████████████   ▂▂▂▂▂▂▂▂▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁97.82
+		");
 	}
 }

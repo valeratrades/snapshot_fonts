@@ -14,6 +14,7 @@ v_utils = "^2"
 
 [dev-dependencies]
 insta = "^1"
+rand = "^0.9"
 v_utils = { version = "^2", features = ["distributions"] }
 
 [lints.clippy]

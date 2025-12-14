@@ -61,6 +61,14 @@
               cargoLock.lockFile = ./Cargo.lock;
               src = pkgs.lib.cleanSource ./.;
             };
+
+            fill-levels-font = pkgs.runCommand "fill-levels-font"
+              {
+                nativeBuildInputs = [ self.packages.${system}.default pkgs.fontforge ];
+              } ''
+              mkdir -p $out/share/fonts/truetype
+              snapshot_fonts bars --output $out/share/fonts/truetype/FillLevels.ttf
+            '';
           };
 
         devShells.default =
@@ -96,8 +104,8 @@
               rust
             ] ++ pre-commit-check.enabledPackages;
 
-						env.RUST_BACKTRACE = 1;
-						env.RUST_LIB_BACKTRACE = 0;
+            env.RUST_BACKTRACE = 1;
+            env.RUST_LIB_BACKTRACE = 0;
           };
       }
     );
