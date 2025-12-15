@@ -19,6 +19,12 @@ enum Commands {
 		#[arg(short, long)]
 		output: PathBuf,
 	},
+	/// Generate the Candles font (52,417 candlestick glyphs)
+	Candles {
+		/// Output path for the TTF file
+		#[arg(short, long)]
+		output: PathBuf,
+	},
 }
 
 fn main() -> Result<()> {
@@ -29,7 +35,11 @@ fn main() -> Result<()> {
 	match cli.command {
 		Commands::FillLevels { output } => {
 			snapshot_fonts::generate_font(&output)?;
-			println!("Generated {}", output.display());
+			println!("Generated FillLevels font: {}", output.display());
+		}
+		Commands::Candles { output } => {
+			snapshot_fonts::generate_candle_font(&output)?;
+			println!("Generated Candles font: {}", output.display());
 		}
 	}
 

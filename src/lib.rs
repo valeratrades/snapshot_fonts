@@ -1,140 +1,12 @@
-use std::{
-	io::Write,
-	path::Path,
-	process::{Command, Stdio},
-};
+pub mod candles;
+pub mod fill_levels;
+mod fontforge;
 
-pub const LEVELS: u16 = 251;
-/// Start of Private Use Area - Plane 15 (PUA-A)
-pub const PUA_START: u32 = 0xf0000;
+pub use candles::{CANDLE_GLYPH_COUNT, CANDLE_PUA_START, CANDLE_SIZE, Candle, decode_candle, encode_candle, generate_candle_font};
+pub use fill_levels::{LEVELS, PUA_START, decode_bars, encode_bars, generate_font};
 
 /// Standard Unicode block characters for fallback mode (8 levels)
 const FALLBACK_BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
-/// Encode two bar values (0-250 each) into a Unicode codepoint in PUA-A (Plane 15)
-pub fn encode_bars(left: u8, right: u8) -> char {
-	debug_assert!(left <= 250, "left must be 0-250");
-	debug_assert!(right <= 250, "right must be 0-250");
-
-	let code = PUA_START + left as u32 * LEVELS as u32 + right as u32;
-	char::from_u32(code).expect("valid codepoint")
-}
-
-/// Decode a Unicode codepoint back to two bar values
-pub fn decode_bars(c: char) -> (u8, u8) {
-	let code = c as u32 - PUA_START;
-	let left = (code / LEVELS as u32) as u8;
-	let right = (code % LEVELS as u32) as u8;
-	(left, right)
-}
-
-/// Generate the FillLevels TTF font file
-pub fn generate_font(output: &Path) -> std::io::Result<()> {
-	let script = format!(
-		r#"
-import fontforge
-
-font = fontforge.font()
-font.fontname = "FillLevels"
-font.familyname = "FillLevels"
-font.fullname = "FillLevels Regular"
-font.encoding = "UnicodeFull"
-
-# Match DejaVu Sans Mono metrics exactly
-# hhea: ascent=1901, descent=-483 (line height = 2384)
-# We use hhea bounds for accurate data representation
-HHEA_ASCENT = 1901
-HHEA_DESCENT = 483
-LINE_HEIGHT = HHEA_ASCENT + HHEA_DESCENT  # 2384
-
-font.em = 2048
-font.ascent = HHEA_ASCENT
-font.descent = 2048 - HHEA_ASCENT  # fontforge requires ascent + descent = em
-
-# Set hhea values explicitly and disable auto-calculation
-font.hhea_ascent = HHEA_ASCENT
-font.hhea_descent = -HHEA_DESCENT
-font.hhea_linegap = 0
-font.hhea_ascent_add = 0
-font.hhea_descent_add = 0
-
-# Set OS/2 metrics to match hhea (some apps use these instead)
-font.os2_typoascent = HHEA_ASCENT
-font.os2_typodescent = -HHEA_DESCENT
-font.os2_typolinegap = 0
-font.os2_typoascent_add = 0
-font.os2_typodescent_add = 0
-font.os2_winascent = HHEA_ASCENT
-font.os2_windescent = HHEA_DESCENT  # positive value
-font.os2_winascent_add = 0
-font.os2_windescent_add = 0
-font.os2_use_typo_metrics = False  # Match DejaVu behavior
-
-# Mark as monospace font
-font.os2_panose = (2, 11, 5, 9, 2, 2, 3, 2, 2, 7)  # panose[3]=9 means monospace
-font.is_quadratic = True
-
-LEVELS = {levels}
-PUA_START = {pua_start}
-
-# Match DejaVu Sans Mono width (1233 in 2048 em = 0.602 ratio)
-GLYPH_WIDTH = 1233
-HALF_WIDTH = GLYPH_WIDTH // 2
-
-for left in range(LEVELS):
-    for right in range(LEVELS):
-        char_code = PUA_START + left * LEVELS + right
-        glyph = font.createChar(char_code)
-        glyph.width = GLYPH_WIDTH
-
-        # Draw from -HHEA_DESCENT to scaled height
-        # Level 0 = empty, Level 250 = full bar from -483 to 1901
-        left_height = int((left / 250.0) * LINE_HEIGHT) - HHEA_DESCENT
-        right_height = int((right / 250.0) * LINE_HEIGHT) - HHEA_DESCENT
-
-        pen = glyph.glyphPen()
-        if left > 0:
-            pen.moveTo((0, -HHEA_DESCENT))
-            pen.lineTo((HALF_WIDTH, -HHEA_DESCENT))
-            pen.lineTo((HALF_WIDTH, left_height))
-            pen.lineTo((0, left_height))
-            pen.closePath()
-
-        if right > 0:
-            pen.moveTo((HALF_WIDTH, -HHEA_DESCENT))
-            pen.lineTo((GLYPH_WIDTH, -HHEA_DESCENT))
-            pen.lineTo((GLYPH_WIDTH, right_height))
-            pen.lineTo((HALF_WIDTH, right_height))
-            pen.closePath()
-        pen = None
-
-font.generate("{output}")
-"#,
-		levels = LEVELS,
-		pua_start = PUA_START,
-		output = output.display()
-	);
-
-	let mut child = Command::new("fontforge")
-		.args(["-lang=py", "-script", "/dev/stdin"])
-		.stdin(Stdio::piped())
-		.stdout(Stdio::null())
-		.stderr(Stdio::null())
-		.spawn()
-		.or_else(|_| {
-			Command::new("nix-shell")
-				.args(["-p", "fontforge", "--run", "fontforge -lang=py -script /dev/stdin"])
-				.stdin(Stdio::piped())
-				.stdout(Stdio::null())
-				.stderr(Stdio::null())
-				.spawn()
-		})?;
-
-	child.stdin.take().unwrap().write_all(script.as_bytes())?;
-
-	let status = child.wait()?;
-	if status.success() { Ok(()) } else { Err(std::io::Error::other("fontforge failed")) }
-}
 
 // ============================================================================
 // Snapshot plotting - uses FillLevels font (251 levels) or fallback (8 levels)
@@ -432,27 +304,6 @@ mod tests {
 	use v_utils::distributions::laplace_random_walk;
 
 	use super::*;
-
-	#[test]
-	fn test_encode_decode_roundtrip() {
-		for left in [0, 1, 125, 249, 250] {
-			for right in [0, 1, 125, 249, 250] {
-				let c = encode_bars(left, right);
-				let (l, r) = decode_bars(c);
-				assert_eq!((left, right), (l, r), "roundtrip failed for ({left}, {right})");
-			}
-		}
-	}
-
-	#[test]
-	fn test_encode_pua_range() {
-		// All codepoints should be in PUA-A range (U+F0000 - U+FFFFD)
-		let min = encode_bars(0, 0);
-		let max = encode_bars(250, 250);
-		assert_eq!(min as u32, PUA_START, "min should be PUA_START");
-		assert_eq!(max as u32, PUA_START + 250 * 251 + 250, "max should be PUA_START + 63000");
-		assert!(max as u32 <= 0xffffd, "should not exceed PUA-A range");
-	}
 
 	#[test]
 	fn test_snapshot_plot_p() {
