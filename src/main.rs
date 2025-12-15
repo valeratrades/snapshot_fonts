@@ -14,7 +14,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
 	/// Generate the FillLevels font (251×251 = 63,001 two-bar glyphs)
-	Bars {
+	FillLevels {
 		/// Output path for the TTF file
 		#[arg(short, long)]
 		output: PathBuf,
@@ -27,7 +27,7 @@ fn main() -> Result<()> {
 	let cli = Cli::parse();
 
 	match cli.command {
-		Commands::Bars { output } => {
+		Commands::FillLevels { output } => {
 			snapshot_fonts::generate_font(&output)?;
 			println!("Generated {}", output.display());
 		}
