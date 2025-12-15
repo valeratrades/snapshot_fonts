@@ -41,10 +41,10 @@ font.fullname = "FillLevels Regular"
 font.encoding = "UnicodeFull"
 
 # Match DejaVu Sans Mono metrics exactly
-# hhea: ascent=1901, descent=-483 (line height = 2384 in 2048 em = 1.164 ratio)
-# Glyphs draw from -483 to 1901 to fill the full line height
+# hhea: ascent=1901, descent=-483 (line height = 2384)
+# We use hhea bounds for accurate data representation
 HHEA_ASCENT = 1901
-HHEA_DESCENT = 483  # positive here, negative in hhea table
+HHEA_DESCENT = 483
 LINE_HEIGHT = HHEA_ASCENT + HHEA_DESCENT  # 2384
 
 font.em = 2048
@@ -57,6 +57,18 @@ font.hhea_descent = -HHEA_DESCENT
 font.hhea_linegap = 0
 font.hhea_ascent_add = 0
 font.hhea_descent_add = 0
+
+# Set OS/2 metrics to match hhea (some apps use these instead)
+font.os2_typoascent = HHEA_ASCENT
+font.os2_typodescent = -HHEA_DESCENT
+font.os2_typolinegap = 0
+font.os2_typoascent_add = 0
+font.os2_typodescent_add = 0
+font.os2_winascent = HHEA_ASCENT
+font.os2_windescent = HHEA_DESCENT  # positive value
+font.os2_winascent_add = 0
+font.os2_windescent_add = 0
+font.os2_use_typo_metrics = False  # Match DejaVu behavior
 
 # Mark as monospace font
 font.os2_panose = (2, 11, 5, 9, 2, 2, 3, 2, 2, 7)  # panose[3]=9 means monospace
@@ -75,20 +87,20 @@ for left in range(LEVELS):
         glyph = font.createChar(char_code)
         glyph.width = GLYPH_WIDTH
 
-        # Draw from -483 to scaled height
-        # Full bar (250) reaches from -483 to 1901
+        # Draw from -HHEA_DESCENT to scaled height
+        # Level 0 = empty, Level 250 = full bar from -483 to 1901
         left_height = int((left / 250.0) * LINE_HEIGHT) - HHEA_DESCENT
         right_height = int((right / 250.0) * LINE_HEIGHT) - HHEA_DESCENT
 
         pen = glyph.glyphPen()
-        if left_height > -HHEA_DESCENT:
+        if left > 0:
             pen.moveTo((0, -HHEA_DESCENT))
             pen.lineTo((HALF_WIDTH, -HHEA_DESCENT))
             pen.lineTo((HALF_WIDTH, left_height))
             pen.lineTo((0, left_height))
             pen.closePath()
 
-        if right_height > -HHEA_DESCENT:
+        if right > 0:
             pen.moveTo((HALF_WIDTH, -HHEA_DESCENT))
             pen.lineTo((GLYPH_WIDTH, -HHEA_DESCENT))
             pen.lineTo((GLYPH_WIDTH, right_height))
