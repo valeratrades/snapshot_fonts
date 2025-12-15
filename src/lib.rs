@@ -39,20 +39,24 @@ font.fontname = "FillLevels"
 font.familyname = "FillLevels"
 font.fullname = "FillLevels Regular"
 font.encoding = "UnicodeFull"
-font.em = 1024
-font.ascent = 1024
-font.descent = 0
 
-# Ensure no line gap for seamless vertical tiling
-font.hhea_ascent = 1024
-font.hhea_descent = 0
+# Match DejaVu Sans Mono metrics exactly
+# hhea: ascent=1901, descent=-483 (line height = 2384 in 2048 em = 1.164 ratio)
+# Glyphs draw from -483 to 1901 to fill the full line height
+HHEA_ASCENT = 1901
+HHEA_DESCENT = 483  # positive here, negative in hhea table
+LINE_HEIGHT = HHEA_ASCENT + HHEA_DESCENT  # 2384
+
+font.em = 2048
+font.ascent = HHEA_ASCENT
+font.descent = 2048 - HHEA_ASCENT  # fontforge requires ascent + descent = em
+
+# Set hhea values explicitly and disable auto-calculation
+font.hhea_ascent = HHEA_ASCENT
+font.hhea_descent = -HHEA_DESCENT
 font.hhea_linegap = 0
-font.os2_typoascent = 1024
-font.os2_typodescent = 0
-font.os2_typolinegap = 0
-font.os2_winascent = 1024
-font.os2_windescent = 0
-font.os2_use_typo_metrics = True
+font.hhea_ascent_add = 0
+font.hhea_descent_add = 0
 
 # Mark as monospace font
 font.os2_panose = (2, 11, 5, 9, 2, 2, 3, 2, 2, 7)  # panose[3]=9 means monospace
@@ -61,8 +65,8 @@ font.is_quadratic = True
 LEVELS = {levels}
 PUA_START = {pua_start}
 
-# Match typical monospace font width ratio (DejaVu Sans Mono: 1233/2048 = 0.602)
-GLYPH_WIDTH = 616  # ~60% of em for proper monospace cell alignment
+# Match DejaVu Sans Mono width (1233 in 2048 em = 0.602 ratio)
+GLYPH_WIDTH = 1233
 HALF_WIDTH = GLYPH_WIDTH // 2
 
 for left in range(LEVELS):
@@ -71,40 +75,28 @@ for left in range(LEVELS):
         glyph = font.createChar(char_code)
         glyph.width = GLYPH_WIDTH
 
-        left_height = int((left / 250.0) * 1024)
-        right_height = int((right / 250.0) * 1024)
+        # Draw from -483 to scaled height
+        # Full bar (250) reaches from -483 to 1901
+        left_height = int((left / 250.0) * LINE_HEIGHT) - HHEA_DESCENT
+        right_height = int((right / 250.0) * LINE_HEIGHT) - HHEA_DESCENT
 
         pen = glyph.glyphPen()
-        if left_height > 0:
-            pen.moveTo((0, 0))
-            pen.lineTo((HALF_WIDTH, 0))
+        if left_height > -HHEA_DESCENT:
+            pen.moveTo((0, -HHEA_DESCENT))
+            pen.lineTo((HALF_WIDTH, -HHEA_DESCENT))
             pen.lineTo((HALF_WIDTH, left_height))
             pen.lineTo((0, left_height))
             pen.closePath()
 
-        if right_height > 0:
-            pen.moveTo((HALF_WIDTH, 0))
-            pen.lineTo((GLYPH_WIDTH, 0))
+        if right_height > -HHEA_DESCENT:
+            pen.moveTo((HALF_WIDTH, -HHEA_DESCENT))
+            pen.lineTo((GLYPH_WIDTH, -HHEA_DESCENT))
             pen.lineTo((GLYPH_WIDTH, right_height))
             pen.lineTo((HALF_WIDTH, right_height))
             pen.closePath()
         pen = None
 
-# Force metrics by opening and re-saving (fontforge sometimes ignores pre-generate settings)
 font.generate("{output}")
-
-# Re-open and force the metrics
-font2 = fontforge.open("{output}")
-font2.hhea_ascent = 1024
-font2.hhea_descent = 0
-font2.hhea_linegap = 0
-font2.os2_typoascent = 1024
-font2.os2_typodescent = 0
-font2.os2_typolinegap = 0
-font2.os2_winascent = 1024
-font2.os2_windescent = 0
-font2.os2_use_typo_metrics = True
-font2.generate("{output}")
 "#,
 		levels = LEVELS,
 		pua_start = PUA_START,

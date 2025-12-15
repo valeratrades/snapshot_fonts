@@ -17,6 +17,7 @@ fn test_font_metrics_are_correct() {
 	}
 
 	// Use fonttools to verify metrics (requires python3 with fonttools)
+	// We match DejaVu Sans Mono metrics: em=2048, ascent=1901, descent=-483
 	let script = format!(
 		r#"
 from fontTools.ttLib import TTFont
@@ -26,33 +27,31 @@ tt = TTFont("{}")
 
 errors = []
 
-# Check hhea table
-if tt['hhea'].ascent != 1024:
-    errors.append(f"hhea.ascent: expected 1024, got {{tt['hhea'].ascent}}")
-if tt['hhea'].descent != 0:
-    errors.append(f"hhea.descent: expected 0, got {{tt['hhea'].descent}}")
+# Check head table
+if tt['head'].unitsPerEm != 2048:
+    errors.append(f"head.unitsPerEm: expected 2048, got {{tt['head'].unitsPerEm}}")
+
+# Check hhea table (should match DejaVu Sans Mono)
+if tt['hhea'].ascent != 1901:
+    errors.append(f"hhea.ascent: expected 1901, got {{tt['hhea'].ascent}}")
+if tt['hhea'].descent != -483:
+    errors.append(f"hhea.descent: expected -483, got {{tt['hhea'].descent}}")
 if tt['hhea'].lineGap != 0:
     errors.append(f"hhea.lineGap: expected 0, got {{tt['hhea'].lineGap}}")
 
-# Check OS/2 table
-if tt['OS/2'].sTypoAscender != 1024:
-    errors.append(f"OS/2.sTypoAscender: expected 1024, got {{tt['OS/2'].sTypoAscender}}")
-if tt['OS/2'].sTypoDescender != 0:
-    errors.append(f"OS/2.sTypoDescender: expected 0, got {{tt['OS/2'].sTypoDescender}}")
-if tt['OS/2'].sTypoLineGap != 0:
-    errors.append(f"OS/2.sTypoLineGap: expected 0, got {{tt['OS/2'].sTypoLineGap}}")
-if tt['OS/2'].usWinAscent != 1024:
-    errors.append(f"OS/2.usWinAscent: expected 1024, got {{tt['OS/2'].usWinAscent}}")
-if tt['OS/2'].usWinDescent != 0:
-    errors.append(f"OS/2.usWinDescent: expected 0, got {{tt['OS/2'].usWinDescent}}")
-
-# Check USE_TYPO_METRICS flag (bit 7 of fsSelection)
-if not (tt['OS/2'].fsSelection & 0x80):
-    errors.append(f"OS/2.fsSelection missing USE_TYPO_METRICS flag")
-
-# Check head table
-if tt['head'].unitsPerEm != 1024:
-    errors.append(f"head.unitsPerEm: expected 1024, got {{tt['head'].unitsPerEm}}")
+# Check full bar glyph fills the line height
+cmap = tt.getBestCmap()
+full_bar_code = 0xf0000 + 250*251 + 250
+if full_bar_code in cmap:
+    glyph_name = cmap[full_bar_code]
+    glyf = tt['glyf']
+    g = glyf[glyph_name]
+    if g.yMin != -483:
+        errors.append(f"full bar yMin: expected -483, got {{g.yMin}}")
+    if g.yMax != 1901:
+        errors.append(f"full bar yMax: expected 1901, got {{g.yMax}}")
+    if g.xMax != 1233:
+        errors.append(f"full bar xMax: expected 1233, got {{g.xMax}}")
 
 if errors:
     for e in errors:
