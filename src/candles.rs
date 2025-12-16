@@ -1,16 +1,13 @@
 use std::path::Path;
 
-use crate::{
-	fill_levels::{LEVELS, PUA_START},
-	fontforge::{GLYPH_WIDTH, HHEA_DESCENT, LINE_HEIGHT},
-};
+use crate::fontforge::{GLYPH_WIDTH, HHEA_DESCENT, LINE_HEIGHT};
 
 /// Candle size (max height = 11, giving 12 placement positions 0..=11)
 pub const CANDLE_SIZE: u8 = 11;
 /// Total number of candle glyphs (calculated by calc_candles script: 52416 + 1 empty = 52417)
 pub const CANDLE_GLYPH_COUNT: u32 = 52417;
-/// Start of candle font in PUA (after FillLevels: 251*251 = 63001 glyphs)
-pub const CANDLE_PUA_START: u32 = PUA_START + (LEVELS as u32 * LEVELS as u32);
+/// Start of candle font in PUA-B (Plane 16): U+100000–U+10FFFD
+pub const CANDLE_PUA_START: u32 = 0x100000;
 
 // Derived constants for glyph geometry
 const WICK_LEFT: i32 = GLYPH_WIDTH / 3;
@@ -287,34 +284,45 @@ impl SnapshotCandles {
 
 			let mut row_chars: Vec<char> = Vec::with_capacity(self.width);
 			for &(high, low, open, close) in &col_data {
-				// Does this candle intersect this row?
+				// Does this candle's wick intersect this row?
 				if high < row_bottom || low > row_top {
-					// Candle doesn't touch this row
 					row_chars.push(empty);
 					continue;
 				}
 
-				// Clamp candle to this row's range
-				let local_high = high.min(row_top).saturating_sub(row_bottom);
-				let local_low = low.max(row_bottom).saturating_sub(row_bottom);
-				let local_open = open.clamp(row_bottom, row_top).saturating_sub(row_bottom);
-				let local_close = close.clamp(row_bottom, row_top).saturating_sub(row_bottom);
+				// Determine if candle extends beyond this row
+				let extends_below = low < row_bottom;
+				let extends_above = high > row_top;
+
+				// Wick bounds within this row
+				let local_low = if extends_below { 0 } else { low - row_bottom };
+				let local_high = if extends_above { CANDLE_SIZE as usize } else { high - row_bottom };
 
 				// placement = where candle low sits in this row (0-11)
-				let placement = local_low.min(CANDLE_SIZE as usize);
+				let placement = local_low;
 
 				// height = wick span within this row
-				let height = local_high.saturating_sub(local_low).min(CANDLE_SIZE as usize);
+				let height = local_high.saturating_sub(local_low);
 
-				// body bounds
-				let body_top = local_open.max(local_close);
-				let body_bottom = local_open.min(local_close);
+				// Body bounds (in global levels)
+				let body_top_global = open.max(close);
+				let body_bottom_global = open.min(close);
 
-				// body_start = offset from candle top to body top
-				let body_start = local_high.saturating_sub(body_top).min(height);
+				// Check if body intersects this row
+				let (body_start, body_size) = if body_top_global < row_bottom || body_bottom_global > row_top {
+					// Body doesn't intersect this row - just wick
+					(0, 0)
+				} else {
+					// Body intersects - clamp to row
+					let local_body_bottom = if body_bottom_global < row_bottom { 0 } else { body_bottom_global - row_bottom };
+					let local_body_top = if body_top_global > row_top { CANDLE_SIZE as usize } else { body_top_global - row_bottom };
 
-				// body_size
-				let body_size = body_top.saturating_sub(body_bottom).min(height.saturating_sub(body_start));
+					// body_start = offset from wick top to body top
+					let bs = local_high.saturating_sub(local_body_top).min(height);
+					// body_size = body span
+					let bsz = local_body_top.saturating_sub(local_body_bottom).min(height.saturating_sub(bs));
+					(bs, bsz)
+				};
 
 				let candle = Candle::new(placement as u8, height as u8, body_start as u8, body_size as u8);
 				row_chars.push(encode_candle(candle));
@@ -484,26 +492,100 @@ mod tests {
 
 	use super::*;
 
+	fn test_chart() -> String {
+		use v_utils::distributions::laplace_random_walk;
+		let prices = laplace_random_walk(100.0, 1000, 0.1, 0.0, Some(42));
+		SnapshotCandles::from_prices(&prices).draw()
+	}
+
 	#[test]
 	fn test_snapshot_candles_chart() {
-		use v_utils::distributions::laplace_random_walk;
-
-		let prices = laplace_random_walk(100.0, 1000, 0.1, 0.0, Some(42));
-		let chart = SnapshotCandles::from_prices(&prices).draw();
+		let chart = test_chart();
 
 		assert_snapshot!(chart, @r"
-		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿙧􀳆󿣈􈟁󿘙󿙧󿘙󿘙󿙬󿘩󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
-		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿜲󿜪󿘙􈌫󿛮󿛮󿙚󿻼􁄍􈝰􀎩󿠮􅦞󿘩󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
-		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙􀊵􈌫󿼅󿦚󿘥󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙􃠺󿘙󿘙󿘙󿘙󿘙󿘙󿘙􀊁􈖋󿨄􅚇
-		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿙮􃊤􁂩􃣾󿠷󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙􁅄􀏣􀚟󿵌󿱐󿘙󿘨􃠺󿘥󿘙󿘙
-		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿣈󿸀􀘑󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿼊􀹫󿪤󿘙󿘙󿘙󿘙
-		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙􈌫󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
-		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿙮􀊯󿘩󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘩􀱚󿣈󿘙󿘙󿘙󿘙󿘙󿘙󿙧󿲿􃓼􀲕􀊯󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙􁭦󿠷󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
-		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘨􁄍󿪤󿼅􁭦󿜲󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿜪󿰖􀉔󿘨󿘙􃣾󿛮󿪭􀕸􁭦󿘩󿜟􀈮󿱵􃠺󿘙󿘙󿛩󿼊􀯥󿘨􈌫􅐳󿘙󿘙󿘙􃒘󿦚󿼊󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
-		󿜦󿣈󿘙󿘩󿜟󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘩􅠜󿘙󿘙󿘙􁃹󿛮􈔅󿘙󿘙󿘙􀳆􀇼􀎪󿨵󿠵󿘙󿘥􁄄􀘟󿘙󿘙󿘙󿘙􅟹􁆙󿪰󿘙󿛩󿘙󿘙󿘙󿘙󿘙󿠵󿠷󿘙􅠜󿘦󿜵􀈅󿪰󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
-		󿠮􂄟􀓷󿼊󿼁􂅄􅦞􀳽󿣆󿘙󿘙󿘙󿘙󿘙󿘙􈌫󿘙󿘙󿘙󿘙󿘙󿘙􅠓􃚢󿘨􅚽􃠺󿪤󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙􈋞󿪤󿘥󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
-		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘥󿛩􃠵􀰜󿘙󿘩󿘙􃊤󿛬󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙􀘖󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘥󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
-		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿠷󿼊󿠮􅔋􁄍󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀁎􁚭􀊯􉆨􀀀􀁎􀀀􀀀􀁓􀀍􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀄙􀄑􀀀􈴒􀃕􀃕􀁁􀣣􁫴􉅗􀶐􀈕􆎅􀀐􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀯑􈴒􀣬􀎁􀀌􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􄈡􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀱨􈽲􀏫􆁮
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀁕􃲋􁪐􄋥􀈞􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􁬫􀷊􁂆􀜳􀘷􀀀􀀏􄈡􀀌􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀊯􀟧􀿸􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀣱􁡒􀒋􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀁕􀲖􀀍􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀍􁙁􀊯􀀀􀀀􀀀􀀀􀀀􀀀􀁎􀚦􃻣􁙼􀲖􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􂕍􀈞􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀏􁫴􀒋􀣬􂕍􀄙􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀄑􀗽􀰻􀀏􀀀􄋥􀃕􀒔􀽟􂕍􀀍􀄆􀰕􀙜􄈡􀀀􀀀􀃐􀣱􁗌􀀏􈴒􅸚􀀀􀀀􀀀􃹿􀎁􀣱􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀄍􀊯􀀀􀀐􀄆􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀍􆈃􀀀􀀀􀀀􁫠􀃕􈻬􀀀􀀀􀀀􁚭􀯣􀶑􀐜􀈜􀀀􀀌􁫫􁀆􀀀􀀀􀀀􀀀􆇠􁮀􀒗􀀀􀃐􀀀􀀀􀀀􀀀􀀀􀈜􀈞􀀀􆈃􀀍􀄜􀯬􀒗􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀈕􂬆􀻞􀣱􀣨􂬫􆎅􁛤􀊭􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􆇺􄂉􀀏􆂤􄈡􀒋􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􀒋􀀌􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀌􀃐􄈜􁘃􀀀􀀍􀀀􃲋􀃓􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀿽􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀌􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀈞􀣱􀈕􅻲􁫴􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
 		");
+	}
+
+	/// Test that multi-row candles are properly connected:
+	/// - Adjacent rows in the same column must be directly touching
+	/// - Candle above must have its bottom extend fully down (placement = 0)
+	/// - Candle below must have its top extend fully up (placement + height = CANDLE_SIZE)
+	#[test]
+	fn test_multirow_candle_continuity() {
+		let chart = test_chart();
+		let rows: Vec<&str> = chart.lines().collect();
+		let height = rows.len();
+
+		if height < 2 {
+			return;
+		}
+
+		// Parse all rows into decoded candles, keeping original chars for debug
+		let decoded: Vec<Vec<(char, Candle)>> = rows.iter().map(|row| row.chars().map(|c| (c, decode_candle(c))).collect()).collect();
+
+		let width = decoded[0].len();
+		let mut errors: Vec<String> = Vec::new();
+		let mut adjacent_pairs = 0;
+
+		// Check each column
+		for col in 0..width {
+			// Check each pair of vertically adjacent rows
+			for row_above_idx in 0..(height - 1) {
+				let row_below_idx = row_above_idx + 1;
+				let (char_above, candle_above) = decoded[row_above_idx][col];
+				let (char_below, candle_below) = decoded[row_below_idx][col];
+
+				// Skip if either is empty
+				if candle_above.is_empty() || candle_below.is_empty() {
+					continue;
+				}
+
+				adjacent_pairs += 1;
+
+				// Both cells have candles - they MUST connect at the row boundary
+				// For connection: above candle must span full cell (touch bottom edge)
+				//                 below candle must span full cell (touch top edge)
+
+				let above_top = candle_above.placement + candle_above.height;
+				let below_top = candle_below.placement + candle_below.height;
+
+				// Candle above must fill its cell completely to connect downward
+				if candle_above.placement != 0 || above_top != CANDLE_SIZE {
+					errors.push(format!(
+						"Col {col}, row {row_above_idx}: above '{char_above}' p={} h={} doesn't fill cell (need p=0, p+h={})",
+						candle_above.placement, candle_above.height, CANDLE_SIZE
+					));
+				}
+
+				// Candle below must fill its cell completely to connect upward
+				if candle_below.placement != 0 || below_top != CANDLE_SIZE {
+					errors.push(format!(
+						"Col {col}, row {row_below_idx}: below '{char_below}' p={} h={} doesn't fill cell (need p=0, p+h={})",
+						candle_below.placement, candle_below.height, CANDLE_SIZE
+					));
+				}
+			}
+		}
+
+		if !errors.is_empty() {
+			panic!(
+				"Multi-row candle continuity errors ({} errors in {} adjacent pairs):\n{}",
+				errors.len(),
+				adjacent_pairs,
+				errors.join("\n")
+			);
+		}
 	}
 }
