@@ -14,7 +14,7 @@ const WICK_LEFT: i32 = GLYPH_WIDTH / 3;
 const WICK_RIGHT: i32 = 2 * GLYPH_WIDTH / 3;
 const BODY_LEFT: i32 = 0;
 const BODY_RIGHT: i32 = GLYPH_WIDTH;
-const LEVEL_HEIGHT: i32 = LINE_HEIGHT / (CANDLE_SIZE as i32 + 1);
+const LEVEL_HEIGHT: i32 = LINE_HEIGHT / CANDLE_SIZE as i32;
 const DOJI_HEIGHT: i32 = LINE_HEIGHT / 44;
 
 /// A rectangle defined by its corners
@@ -252,8 +252,8 @@ impl SnapshotCandles {
 			return (0..self.height).map(|_| mid.to_string().repeat(self.width)).collect::<Vec<_>>().join("\n");
 		}
 
-		// Total levels = height rows * 12 levels per row
-		let levels_per_row = CANDLE_SIZE as usize + 1; // 12
+		// Total levels = height rows * 11 levels per row
+		let levels_per_row = CANDLE_SIZE as usize;
 		let total_levels = self.height * levels_per_row;
 		let price_per_level = (max_price - min_price) / (total_levels - 1) as f64;
 
@@ -294,9 +294,13 @@ impl SnapshotCandles {
 				let extends_below = low < row_bottom;
 				let extends_above = high > row_top;
 
+				// For visual continuity of multi-row candles, fill the entire cell
+				// when candle extends to adjacent rows
+				let fills_cell = extends_below || extends_above;
+
 				// Wick bounds within this row
-				let local_low = if extends_below { 0 } else { low - row_bottom };
-				let local_high = if extends_above { CANDLE_SIZE as usize } else { high - row_bottom };
+				let local_low = if fills_cell { 0 } else { low - row_bottom };
+				let local_high = if fills_cell { CANDLE_SIZE as usize } else { high - row_bottom };
 
 				// placement = where candle low sits in this row (0-11)
 				let placement = local_low;
@@ -503,18 +507,18 @@ mod tests {
 		let chart = test_chart();
 
 		assert_snapshot!(chart, @r"
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀁎􁚭􀊯􉆨􀀀􀁎􀀀􀀀􀁓􀀍􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀄙􀄑􀀀􈴒􀃕􀃕􀁁􀣣􁫴􉅗􀶐􀈕􆎅􀀐􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀯑􈴒􀣬􀎁􀀌􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􄈡􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀱨􈽲􀏫􆁮
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀁕􃲋􁪐􄋥􀈞􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􁬫􀷊􁂆􀜳􀘷􀀀􀀏􄈡􀀌􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀊯􀟧􀿸􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀣱􁡒􀒋􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉇣􉆨􉅏􉆨􈳅􉇣􈳅􀀀􉈃􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉈃􉇣􀀀􈴒􈳦􈳦􈳜􈴩􈴉􉅻􀲼􈳅􈾕􉈎􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􈴒􈳯􀎁􈳑􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴍􀀀􀀀􈳅􀀀􀀀􀀀􀀀􉆨􈽲􀞫􃸍
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉈎􂕍􀻢􈸪􈳯􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀽝􀜘􈾤􀍎􉆨􀀀􉈃􈴐􈳅􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉅏􀝩􈳦􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳾􀶂􈳑􀀀􀀀􀀀􀀀
 		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀁕􀲖􀀍􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀍􁙁􀊯􀀀􀀀􀀀􀀀􀀀􀀀􀁎􀚦􃻣􁙼􀲖􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􂕍􀈞􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀏􁫴􀒋􀣬􂕍􀄙􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀄑􀗽􀰻􀀏􀀀􄋥􀃕􀒔􀽟􂕍􀀍􀄆􀰕􀙜􄈡􀀀􀀀􀃐􀣱􁗌􀀏􈴒􅸚􀀀􀀀􀀀􃹿􀎁􀣱􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀄍􀊯􀀀􀀐􀄆􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀍􆈃􀀀􀀀􀀀􁫠􀃕􈻬􀀀􀀀􀀀􁚭􀯣􀶑􀐜􀈜􀀀􀀌􁫫􁀆􀀀􀀀􀀀􀀀􆇠􁮀􀒗􀀀􀃐􀀀􀀀􀀀􀀀􀀀􀈜􀈞􀀀􆈃􀀍􀄜􀯬􀒗􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀈕􂬆􀻞􀣱􀣨􂬫􆎅􁛤􀊭􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􆇺􄂉􀀏􆂤􄈡􀒋􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􀒋􀀌􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀌􀃐􄈜􁘃􀀀􀀍􀀀􃲋􀃓􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀿽􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀌􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀈞􀣱􀈕􅻲􁫴􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉈎􉈃􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􉅏􉆨􀀀􀀀􀀀􀀀􀀀􀀀􉈃􀚦􂛚􉅏􉈃􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈻬􈳯􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉈃􈴄􈳑􈴽􈾟􉈃􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉇣􀘚􉄿􉈎􀀀􈻘􈳦􈳦􀹯􈾟􈳅􉇣􀘚􉈃􈴍􀀀􀀀􈳑􈳷􉁆􉈃􅸚􈸹􀀀􀀀􀀀􉅏􀎔􈳾􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􉇏􉆨􀀀􉈎􉆨􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􈴐􀀀􀀀􀀀􈳦􈳦􈻬􀀀􀀀􀀀􉆨􉀐􀶑􀇀􈳦􀀀􈳅􈳷􀼴􀀀􀀀􀀀􀀀􈳯􈼘􈳦􀀀􈳑􀀀􀀀􀀀􀀀􀀀􈳦􈳯􀀀􈴐􉇭􉈎􉁆􈳯􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􈳅􈳦􀞱􈳷􈳦􈶵􄀚􉈃􉆖􈳅􀀀􀀀􀀀􀀀􀀀􈶕􀀀􀀀􀀀􀀀􀀀􀀀􈴉􂠩􉈃􃹿􈴍􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􈳑􈳑􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳑􈳅􈵹􉃘􉈎􈳅􀀀􈻬􈳜􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳯􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳯􈳷􈴓􃴴􈴉􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
 		");
 	}
 
@@ -532,9 +536,7 @@ mod tests {
 			.filter_map(|line| line.chars().nth(53))
 			.collect();
 
-		dbg!(&problematic_col);
-
-		assert_snapshot!(problematic_col.iter().collect::<String>(), @"􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀯬􀀌􀀀􀀀");
+		assert_snapshot!(problematic_col.iter().collect::<String>(), @"􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉇭􈳅􈳅􀀀");
 	}
 
 	/// Test that multi-row candles are properly connected:
