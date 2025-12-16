@@ -21,7 +21,7 @@ const LEVEL_HEIGHT: i32 = LINE_HEIGHT / (CANDLE_SIZE as i32 + 1);
 const DOJI_HEIGHT: i32 = LINE_HEIGHT / 44;
 
 /// A rectangle defined by its corners
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Rect {
 	left: i32,
 	bottom: i32,
@@ -215,10 +215,11 @@ impl SnapshotCandles {
 		}
 	}
 
-	/// Create from price series, grouping into candles
-	pub fn from_prices<T: Into<f64> + Copy>(prices: &[T], candles_per_char: usize) -> Self {
+	/// Create from price series - step size is calculated from width
+	pub fn from_prices<T: Into<f64> + Copy>(prices: &[T]) -> Self {
 		let prices: Vec<f64> = prices.iter().map(|p| (*p).into()).collect();
-		let ohlcs = v_utils::trades::mock_p_to_ohlc(&prices, candles_per_char);
+		let step = (prices.len() / DEFAULT_WIDTH).max(1);
+		let ohlcs = v_utils::trades::mock_p_to_ohlc(&prices, step);
 		Self {
 			ohlcs,
 			width: DEFAULT_WIDTH,
@@ -237,79 +238,91 @@ impl SnapshotCandles {
 	}
 
 	/// Render the candlestick chart
+	/// Multiple rows give more vertical precision - each row covers (CANDLE_SIZE+1) levels
 	pub fn draw(&self) -> String {
+		let empty = encode_candle(Candle::empty());
 		if self.ohlcs.is_empty() {
-			return (0..self.height)
-				.map(|_| encode_candle(Candle::empty()).to_string().repeat(self.width))
-				.collect::<Vec<_>>()
-				.join("\n");
+			return (0..self.height).map(|_| empty.to_string().repeat(self.width)).collect::<Vec<_>>().join("\n");
 		}
 
-		// Find price range
+		// Find price range from wick extremes
 		let min_price = self.ohlcs.iter().map(|o| o.low).fold(f64::INFINITY, f64::min);
 		let max_price = self.ohlcs.iter().map(|o| o.high).fold(f64::NEG_INFINITY, f64::max);
 
 		if (max_price - min_price).abs() < f64::EPSILON {
-			// All same price - draw middle candles
 			let mid_candle = Candle::new(CANDLE_SIZE / 2, 0, 0, 0);
-			return (0..self.height).map(|_| encode_candle(mid_candle).to_string().repeat(self.width)).collect::<Vec<_>>().join("\n");
+			let mid = encode_candle(mid_candle);
+			return (0..self.height).map(|_| mid.to_string().repeat(self.width)).collect::<Vec<_>>().join("\n");
 		}
 
-		// Total vertical levels = height * (CANDLE_SIZE + 1) placements
-		let total_levels = self.height * (CANDLE_SIZE as usize + 1);
+		// Total levels = height rows * 12 levels per row
+		let levels_per_row = CANDLE_SIZE as usize + 1; // 12
+		let total_levels = self.height * levels_per_row;
 		let price_per_level = (max_price - min_price) / (total_levels - 1) as f64;
 
-		// Sample OHLCs to fit width
-		let mut chars: Vec<char> = Vec::with_capacity(self.width);
+		// For each column, compute the OHLC levels
+		let mut col_data: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(self.width);
 		for i in 0..self.width {
 			let ohlc_idx = (i * self.ohlcs.len()) / self.width;
 			let ohlc = &self.ohlcs[ohlc_idx.min(self.ohlcs.len() - 1)];
 
-			// Convert OHLC prices to level indices
 			let high_level = ((ohlc.high - min_price) / price_per_level).round() as usize;
 			let low_level = ((ohlc.low - min_price) / price_per_level).round() as usize;
 			let open_level = ((ohlc.open - min_price) / price_per_level).round() as usize;
 			let close_level = ((ohlc.close - min_price) / price_per_level).round() as usize;
 
-			let body_top_level = open_level.max(close_level);
-			let body_bottom_level = open_level.min(close_level);
-
-			// Determine which row this candle primarily sits in
-			let candle_mid_level = (high_level + low_level) / 2;
-			let row = candle_mid_level / (CANDLE_SIZE as usize + 1);
-			let row = row.min(self.height - 1);
-
-			// Calculate placement within row (0 = bottom of row, 11 = top)
-			let row_base_level = row * (CANDLE_SIZE as usize + 1);
-			let placement = low_level.saturating_sub(row_base_level).min(CANDLE_SIZE as usize);
-
-			// Calculate candle height (in levels, 0-11)
-			let candle_height = (high_level - low_level).min(CANDLE_SIZE as usize);
-
-			// Body position relative to candle top
-			let body_start = if candle_height > 0 { (high_level - body_top_level).min(candle_height) } else { 0 };
-			let body_size = if body_top_level > body_bottom_level {
-				(body_top_level - body_bottom_level).min(candle_height - body_start)
-			} else {
-				0 // doji
-			};
-
-			let candle = Candle::new(placement as u8, candle_height as u8, body_start as u8, body_size as u8);
-			chars.push(encode_candle(candle));
+			col_data.push((
+				high_level.min(total_levels - 1),
+				low_level.min(total_levels - 1),
+				open_level.min(total_levels - 1),
+				close_level.min(total_levels - 1),
+			));
 		}
 
 		// Build rows from top to bottom
-		// Each row shows candles whose placement puts them in that row
 		let mut rows: Vec<String> = Vec::with_capacity(self.height);
-		for _row in (0..self.height).rev() {
-			// For now, just output one row of candles (simplified)
-			// A proper implementation would split candles across rows
-			rows.push(chars.iter().collect());
+		for row in (0..self.height).rev() {
+			let row_bottom = row * levels_per_row;
+			let row_top = row_bottom + levels_per_row - 1;
+
+			let mut row_chars: Vec<char> = Vec::with_capacity(self.width);
+			for &(high, low, open, close) in &col_data {
+				// Does this candle intersect this row?
+				if high < row_bottom || low > row_top {
+					// Candle doesn't touch this row
+					row_chars.push(empty);
+					continue;
+				}
+
+				// Clamp candle to this row's range
+				let local_high = high.min(row_top).saturating_sub(row_bottom);
+				let local_low = low.max(row_bottom).saturating_sub(row_bottom);
+				let local_open = open.clamp(row_bottom, row_top).saturating_sub(row_bottom);
+				let local_close = close.clamp(row_bottom, row_top).saturating_sub(row_bottom);
+
+				// placement = where candle low sits in this row (0-11)
+				let placement = local_low.min(CANDLE_SIZE as usize);
+
+				// height = wick span within this row
+				let height = local_high.saturating_sub(local_low).min(CANDLE_SIZE as usize);
+
+				// body bounds
+				let body_top = local_open.max(local_close);
+				let body_bottom = local_open.min(local_close);
+
+				// body_start = offset from candle top to body top
+				let body_start = local_high.saturating_sub(body_top).min(height);
+
+				// body_size
+				let body_size = body_top.saturating_sub(body_bottom).min(height.saturating_sub(body_start));
+
+				let candle = Candle::new(placement as u8, height as u8, body_start as u8, body_size as u8);
+				row_chars.push(encode_candle(candle));
+			}
+			rows.push(row_chars.iter().collect());
 		}
 
-		// Actually, the candle font is designed for single-row output
-		// Each character encodes full OHLC, placement handles vertical position
-		chars.iter().collect()
+		rows.join("\n")
 	}
 }
 
@@ -476,8 +489,21 @@ mod tests {
 		use v_utils::distributions::laplace_random_walk;
 
 		let prices = laplace_random_walk(100.0, 1000, 0.1, 0.0, Some(42));
-		let chart = SnapshotCandles::from_prices(&prices, 10).width(90).draw();
+		let chart = SnapshotCandles::from_prices(&prices).draw();
 
-		assert_snapshot!(chart, @"􁙄􉔄􀒵􁎟􀊯󿼊􂊇􁭡􀉭􅵳􅒠􀜷󿭢􈓱􈌫􈌫􉌪􄋛􃓼􁐽􈌫􀊁􈑒􃝗􈌫􈌐􃔌􈌫􀎎󿩄􁚤󿱁􀉭󿸎􈌫􄍤􃐿󿪭􀖇􈡷􃿊󿜝􃏗􈌦􀈅􀇼􀻨􀯂􈎮􃊢􈔅􈖸􈌗􂣡􀲙􁭡􅚽󿧞􈌫󿸙􄉱􈑒􀗍􈷕􅒽􂧜􃬃􈷕􅖵􀲕􈝀􁎆􀤤􃱳􉌨󿿸􈔅􈎮􁆂􀏀􁍡󿴍􈷕􀙥􈌩􁴈􈔅󿦭􅚽􅐮");
+		assert_snapshot!(chart, @r"
+		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿙧􀳆󿣈􈟁󿘙󿙧󿘙󿘙󿙬󿘩󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
+		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿜲󿜪󿘙􈌫󿛮󿛮󿙚󿻼􁄍􈝰􀎩󿠮􅦞󿘩󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
+		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙􀊵􈌫󿼅󿦚󿘥󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙􃠺󿘙󿘙󿘙󿘙󿘙󿘙󿘙􀊁􈖋󿨄􅚇
+		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿙮􃊤􁂩􃣾󿠷󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙􁅄􀏣􀚟󿵌󿱐󿘙󿘨􃠺󿘥󿘙󿘙
+		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿣈󿸀􀘑󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿼊􀹫󿪤󿘙󿘙󿘙󿘙
+		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙􈌫󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
+		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿙮􀊯󿘩󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘩􀱚󿣈󿘙󿘙󿘙󿘙󿘙󿘙󿙧󿲿􃓼􀲕􀊯󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙􁭦󿠷󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
+		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘨􁄍󿪤󿼅􁭦󿜲󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿜪󿰖􀉔󿘨󿘙􃣾󿛮󿪭􀕸􁭦󿘩󿜟􀈮󿱵􃠺󿘙󿘙󿛩󿼊􀯥󿘨􈌫􅐳󿘙󿘙󿘙􃒘󿦚󿼊󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
+		󿜦󿣈󿘙󿘩󿜟󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘩􅠜󿘙󿘙󿘙􁃹󿛮􈔅󿘙󿘙󿘙􀳆􀇼􀎪󿨵󿠵󿘙󿘥􁄄􀘟󿘙󿘙󿘙󿘙􅟹􁆙󿪰󿘙󿛩󿘙󿘙󿘙󿘙󿘙󿠵󿠷󿘙􅠜󿘦󿜵􀈅󿪰󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
+		󿠮􂄟􀓷󿼊󿼁􂅄􅦞􀳽󿣆󿘙󿘙󿘙󿘙󿘙󿘙􈌫󿘙󿘙󿘙󿘙󿘙󿘙􅠓􃚢󿘨􅚽􃠺󿪤󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙􈋞󿪤󿘥󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
+		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘥󿛩􃠵􀰜󿘙󿘩󿘙􃊤󿛬󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙􀘖󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘥󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
+		󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿠷󿼊󿠮􅔋􁄍󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙󿘙
+		");
 	}
 }
