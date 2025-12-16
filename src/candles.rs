@@ -4,8 +4,17 @@ use crate::fontforge::{GLYPH_WIDTH, HHEA_DESCENT, LINE_HEIGHT};
 
 /// Candle size (max height = 11, giving 12 placement positions 0..=11)
 pub const CANDLE_SIZE: u8 = 11;
-/// Total number of candle glyphs (calculated by calc_candles script: 52416 + 1 empty = 52417)
-pub const CANDLE_GLYPH_COUNT: u32 = 52417;
+/// Number of naked wick glyphs:
+/// - high_offset=0, height=1..=11 (wick comes from above): 11 options
+/// - high_offset=1..=10, height fills to bottom (wick goes below): 10 options
+/// Total: 21
+pub const NAKED_WICK_COUNT: u32 = 21;
+/// Total number of candle glyphs:
+/// - 1 empty
+/// - 52416 regular (with body)
+/// - 21 naked wick (wick only, connected to outside)
+/// = 52438
+pub const CANDLE_GLYPH_COUNT: u32 = 52438;
 /// Start of candle font in PUA-B (Plane 16): U+100000–U+10FFFD
 pub const CANDLE_PUA_START: u32 = 0x100000;
 
@@ -144,77 +153,205 @@ fn generate_all_glyphs() -> Vec<CandleGlyph> {
 		}
 	}
 
+	// Naked wick glyphs (wick only, body is outside this cell)
+	// Must connect to outside: either starts at top (high_offset=0) or ends at bottom
+
+	// high_offset=0, height=1..=11 (wick comes from above)
+	for h in 1..=size {
+		let wick_top_y = cell_top; // p=0
+		let wick_bottom_y = wick_top_y - h * LEVEL_HEIGHT;
+
+		let wick = Rect {
+			left: WICK_LEFT,
+			right: WICK_RIGHT,
+			bottom: wick_bottom_y,
+			top: wick_top_y,
+		};
+
+		glyphs.push(CandleGlyph {
+			char_code,
+			wick: wick.is_valid().then_some(wick),
+			body: None,
+		});
+		char_code += 1;
+	}
+
+	// high_offset=1..=10, height fills to bottom (wick goes below)
+	for p in 1..size {
+		let h = size - p; // height to fill to bottom
+		let wick_top_y = cell_top - p * LEVEL_HEIGHT;
+		let wick_bottom_y = wick_top_y - h * LEVEL_HEIGHT;
+
+		let wick = Rect {
+			left: WICK_LEFT,
+			right: WICK_RIGHT,
+			bottom: wick_bottom_y,
+			top: wick_top_y,
+		};
+
+		glyphs.push(CandleGlyph {
+			char_code,
+			wick: wick.is_valid().then_some(wick),
+			body: None,
+		});
+		char_code += 1;
+	}
+
 	glyphs
 }
 
 /// Candle representation using the encoding from calc_candles:
-/// - `placement`: 0-11, vertical position of candle within character cell
+/// - `high_offset`: 0-11, vertical position of candle within character cell (offset from top to wick high)
 /// - `height`: 0-11, internal candle height (wick span from high to low)
-/// - `body_start`: offset from top of candle to body top (0 to height)
-/// - `body_size`: size of body (0 = doji, drawn as thin line)
-/// - `wick_above`: how far wick extends above body (0 to body_start)
-/// - `wick_below`: how far wick extends below body (0 to height - body_start - body_size)
+/// - `body_offset`: offset from top of candle to body top (0 to height), or -1 for naked wick
+/// - `body_size`: size of body (0 = doji, drawn as thin line), or -1 for naked wick
+///
+/// When both `body_offset` and `body_size` are -1, the candle is a "naked wick" - just wick, no body.
+/// This is used when the body is entirely outside this character cell.
 ///
 /// For simplicity, we use the first wick configuration (wick_above=0, wick_below=0)
 /// in the basic encode/decode. Full wick support would need additional parameters.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Candle {
-	pub placement: u8,
-	pub height: u8,
-	pub body_start: u8,
-	pub body_size: u8,
+	pub high_offset: i8,
+	pub height: i8,
+	pub body_offset: i8,
+	pub body_size: i8,
 }
+
+/// Sentinel value indicating naked wick (no body in this cell)
+pub const NAKED_WICK: i8 = -1;
 
 impl Candle {
 	/// Create a new candle with the specified geometry.
 	///
 	/// # Parameters
-	/// - `placement`: Offset of the entire candle from the top of the char cell (0-11).
+	/// - `high_offset`: Offset of the entire candle from the top of the char cell (0-11).
 	///   This is where the wick starts (the HIGH point).
 	/// - `height`: The total height of the candle (wick span from high to low).
-	///   The candle extends from `placement` to `placement + height`.
-	/// - `body_start`: Offset from `placement` to the body top (0 to height).
-	///   If `body_start == 0`, body starts at the same level as the wick top (no top wick).
-	/// - `body_size`: Size of the body (0 = doji, drawn as thin line).
-	///   Body extends from `placement + body_start` to `placement + body_start + body_size`.
+	///   The candle extends from `high_offset` to `high_offset + height`.
+	/// - `body_offset`: Offset from `high_offset` to the body top (0 to height), or NAKED_WICK (-1).
+	///   If `body_offset == 0`, body starts at the same level as the wick top (no top wick).
+	/// - `body_size`: Size of the body (0 = doji, drawn as thin line), or NAKED_WICK (-1).
+	///   Body extends from `high_offset + body_offset` to `high_offset + body_offset + body_size`.
 	///
 	/// # Geometry (all offsets from top of char cell)
-	/// - Wick top (HIGH): at `placement`
-	/// - Top wick: from `placement` to `placement + body_start` (length = body_start)
-	/// - Body top: at `placement + body_start`
-	/// - Body bottom: at `placement + body_start + body_size`
-	/// - Bottom wick: from `placement + body_start + body_size` to `placement + height`
-	/// - Wick bottom (LOW): at `placement + height`
+	/// - Wick top (HIGH): at `high_offset`
+	/// - Top wick: from `high_offset` to `high_offset + body_offset` (length = body_offset)
+	/// - Body top: at `high_offset + body_offset`
+	/// - Body bottom: at `high_offset + body_offset + body_size`
+	/// - Bottom wick: from `high_offset + body_offset + body_size` to `high_offset + height`
+	/// - Wick bottom (LOW): at `high_offset + height`
 	///
-	/// The rendering approach: first draw wick from `placement` through `placement + height`,
+	/// The rendering approach: first draw wick from `high_offset` through `high_offset + height`,
 	/// then overlap body on top.
-	pub fn new(placement: u8, height: u8, body_start: u8, body_size: u8) -> Self {
-		debug_assert!(placement <= CANDLE_SIZE);
-		debug_assert!(height <= CANDLE_SIZE);
-		debug_assert!(body_start <= height);
-		debug_assert!(body_start + body_size <= height);
+	pub fn new(high_offset: i8, height: i8, body_offset: i8, body_size: i8) -> Self {
 		Candle {
-			placement,
+			high_offset,
 			height,
-			body_start,
+			body_offset,
 			body_size,
+		}
+	}
+
+	/// Create a naked wick candle (wick only, no body in this cell)
+	pub fn naked_wick(high_offset: i8, height: i8) -> Self {
+		Candle {
+			high_offset,
+			height,
+			body_offset: NAKED_WICK,
+			body_size: NAKED_WICK,
 		}
 	}
 
 	/// Create empty candle (codepoint 0 in candle range)
 	pub fn empty() -> Self {
 		Candle {
-			placement: 0,
+			high_offset: 0,
 			height: 0,
-			body_start: 0,
+			body_offset: 0,
 			body_size: 0,
 		}
 	}
 
 	/// Check if this is the empty candle
 	pub fn is_empty(&self) -> bool {
-		// Empty candle is index 0, which is height=0, placement=0, body=0
-		self.height == 0 && self.placement == 0 && self.body_start == 0 && self.body_size == 0
+		// Empty candle is index 0, which is height=0, high_offset=0, body=0
+		self.height == 0 && self.high_offset == 0 && self.body_offset == 0 && self.body_size == 0
+	}
+
+	/// Check if this is a naked wick (wick only, no body)
+	pub fn is_naked_wick(&self) -> bool {
+		self.body_offset == NAKED_WICK && self.body_size == NAKED_WICK
+	}
+
+	/// Validate candle parameters and return error message if invalid
+	pub fn validate(&self) -> Result<(), String> {
+		let size = CANDLE_SIZE as i8;
+
+		// Empty candle is always valid
+		if self.is_empty() {
+			return Ok(());
+		}
+
+		// Check high_offset bounds
+		if self.high_offset < 0 || self.high_offset > size {
+			return Err(format!("high_offset {} out of range [0, {}]", self.high_offset, size));
+		}
+
+		// Check height bounds
+		if self.height < 0 || self.height > size {
+			return Err(format!("height {} out of range [0, {}]", self.height, size));
+		}
+
+		// Check that candle fits in cell
+		if self.high_offset + self.height > size {
+			return Err(format!(
+				"candle extends beyond cell: high_offset({}) + height({}) = {} > {}",
+				self.high_offset,
+				self.height,
+				self.high_offset + self.height,
+				size
+			));
+		}
+
+		// Naked wick validation: must connect to outside
+		// Either high_offset=0 (connects above) or high_offset+height=size (connects below)
+		if self.is_naked_wick() {
+			let connects_above = self.high_offset == 0;
+			let connects_below = self.high_offset + self.height == size;
+			if !connects_above && !connects_below {
+				return Err(format!(
+					"naked wick must connect to outside: high_offset={}, height={}, need high_offset=0 OR high_offset+height={}",
+					self.high_offset, self.height, size
+				));
+			}
+			if self.height == 0 {
+				return Err("naked wick cannot have height=0".to_string());
+			}
+			return Ok(());
+		}
+
+		// Body parameter validation (non-naked wick)
+		if self.body_offset < 0 || self.body_offset > self.height {
+			return Err(format!("body_offset {} out of range [0, height={}]", self.body_offset, self.height));
+		}
+
+		if self.body_size < 0 {
+			return Err(format!("body_size {} cannot be negative (use NAKED_WICK for both body params)", self.body_size));
+		}
+
+		if self.body_offset + self.body_size > self.height {
+			return Err(format!(
+				"body extends beyond wick: body_offset({}) + body_size({}) = {} > height({})",
+				self.body_offset,
+				self.body_size,
+				self.body_offset + self.body_size,
+				self.height
+			));
+		}
+
+		Ok(())
 	}
 }
 
@@ -280,7 +417,7 @@ impl SnapshotCandles {
 		let max_price = self.ohlcs.iter().map(|o| o.high).fold(f64::NEG_INFINITY, f64::max);
 
 		if (max_price - min_price).abs() < f64::EPSILON {
-			let mid_candle = Candle::new(CANDLE_SIZE / 2, 0, 0, 0);
+			let mid_candle = Candle::new((CANDLE_SIZE / 2) as i8, 0, 0, 0);
 			let mid = encode_candle(mid_candle);
 			return (0..self.height).map(|_| mid.to_string().repeat(self.width)).collect::<Vec<_>>().join("\n");
 		}
@@ -339,8 +476,8 @@ impl SnapshotCandles {
 				let local_high = if fills_cell { levels_per_row } else { high - row_bottom + 1 };
 
 				// Convert to new coordinate system where 0 = top of cell
-				// placement = offset from top of cell to wick top (HIGH point)
-				let placement = levels_per_row - local_high;
+				// high_offset = offset from top of cell to wick top (HIGH point)
+				let high_offset = levels_per_row - local_high;
 
 				// height = wick span (from high to low)
 				let height = local_high - local_low;
@@ -350,9 +487,18 @@ impl SnapshotCandles {
 				let body_bottom_global = open.min(close);
 
 				// Check if body intersects this row
-				let (body_start, body_size) = if body_top_global < row_bottom || body_bottom_global > row_top {
-					// Body doesn't intersect this row - just wick
-					(0, 0)
+				let body_intersects = !(body_top_global < row_bottom || body_bottom_global > row_top);
+
+				// For fill rows (wick fills cell AND body doesn't intersect), body fills entire cell
+				// This creates visual continuity for candles spanning multiple rows
+				let is_fill_row = fills_cell && !body_intersects;
+
+				let candle = if is_fill_row {
+					// Fill row: body fills entire cell (body_offset=0, body_size=height)
+					Candle::new(high_offset as i8, height as i8, 0, height as i8)
+				} else if !body_intersects {
+					// Body doesn't intersect this row - naked wick
+					Candle::naked_wick(high_offset as i8, height as i8)
 				} else {
 					// Body intersects - clamp to row boundaries
 					let body_extends_below = body_bottom_global < row_bottom;
@@ -363,15 +509,13 @@ impl SnapshotCandles {
 					let local_body_bottom = if body_fills_cell { 0 } else { body_bottom_global - row_bottom };
 					let local_body_top = if body_fills_cell { levels_per_row } else { body_top_global - row_bottom + 1 };
 
-					// body_start = offset from placement to body top
+					// body_offset = offset from high_offset to body top
 					// local_high is the exclusive top of wick, local_body_top is exclusive top of body
-					let bs = local_high - local_body_top;
+					let bo = local_high - local_body_top;
 					// body_size = body span
 					let bsz = local_body_top - local_body_bottom;
-					(bs, bsz)
+					Candle::new(high_offset as i8, height as i8, bo as i8, bsz as i8)
 				};
-
-				let candle = Candle::new(placement as u8, height as u8, body_start as u8, body_size as u8);
 				row_chars.push(encode_candle(candle));
 			}
 			rows.push(row_chars.iter().collect());
@@ -382,41 +526,73 @@ impl SnapshotCandles {
 }
 
 /// Encode a candle into a Unicode codepoint in PUA
-/// Index 0 = empty candle
-/// Then for each height h (0..=11):
-///   for each placement p (0..=11):
-///     for each body config with wick options
+/// Layout:
+/// - Index 0: empty candle
+/// - Indices 1..52417: regular candles (with body)
+/// - Indices 52417..52483: naked wick candles (no body)
 pub fn encode_candle(candle: Candle) -> char {
+	// Validate before encoding
+	if let Err(e) = candle.validate() {
+		panic!("Invalid candle: {}", e);
+	}
+
 	// Index 0 is empty
 	if candle.is_empty() {
 		return char::from_u32(CANDLE_PUA_START).expect("valid codepoint");
 	}
 
-	let mut index: u32 = 1; // Start at 1 (0 is empty)
 	let size = CANDLE_SIZE as u32;
-	let placement_options = size + 1; // 12
 
-	// Add all glyphs from previous heights
-	for h in 0..candle.height {
-		index += candle_count_for_height(h as u32, size) * placement_options;
+	// Handle naked wick separately
+	if candle.is_naked_wick() {
+		// Naked wick index starts after all regular glyphs
+		let regular_count = 52416u32; // Pre-calculated
+		let mut index = 1 + regular_count;
+
+		let h = candle.height as u32;
+		let p = candle.high_offset as u32;
+
+		// Naked wick layout:
+		// - First 11: high_offset=0, height=1..=11
+		// - Next 10: high_offset=1..=10, height fills to bottom (11-high_offset)
+		if p == 0 {
+			// high_offset=0 case: index by height (1-indexed)
+			index += h - 1;
+		} else {
+			// high_offset>0 case: must fill to bottom
+			// These come after the 11 high_offset=0 glyphs
+			index += 11 + (p - 1);
+		}
+
+		let code = CANDLE_PUA_START + index;
+		return char::from_u32(code).expect("valid codepoint");
 	}
 
-	// Add glyphs from previous placements within this height
-	let h = candle.height as u32;
-	index += candle.placement as u32 * candle_count_for_height(h, size);
+	// Regular candle encoding
+	let mut index: u32 = 1; // Start at 1 (0 is empty)
+	let high_offset_options = size + 1; // 12
 
-	// Add glyphs from previous body configs within this height/placement
-	// Iterate body_start from 0
+	// Add all glyphs from previous heights
+	for h in 0..candle.height as u32 {
+		index += candle_count_for_height(h, size) * high_offset_options;
+	}
+
+	// Add glyphs from previous high_offsets within this height
+	let h = candle.height as u32;
+	index += candle.high_offset as u32 * candle_count_for_height(h, size);
+
+	// Add glyphs from previous body configs within this height/high_offset
+	// Iterate body_offset from 0
 	let n_borders = h + 1;
-	for bs in 0..candle.body_start as u32 {
+	for bs in 0..candle.body_offset as u32 {
 		for bsz in 0..(n_borders - bs) {
 			index += wick_options(bs, bsz, n_borders);
 		}
 	}
 
-	// Add glyphs from previous body_size within this body_start
+	// Add glyphs from previous body_size within this body_offset
 	for bsz in 0..candle.body_size as u32 {
-		index += wick_options(candle.body_start as u32, bsz, n_borders);
+		index += wick_options(candle.body_offset as u32, bsz, n_borders);
 	}
 
 	// We use first wick option (wick_above=0, wick_below=0)
@@ -433,14 +609,36 @@ pub fn decode_candle(c: char) -> Candle {
 		return Candle::empty();
 	}
 
-	let mut remaining = index - 1; // Subtract 1 for empty
 	let size = CANDLE_SIZE as u32;
-	let placement_options = size + 1;
+	let regular_count = 52416u32;
+
+	// Check if this is a naked wick glyph (after regular glyphs)
+	if index > regular_count {
+		let remaining = index - 1 - regular_count;
+
+		// Naked wick layout:
+		// - First 11 (indices 0-10): high_offset=0, height=1..=11
+		// - Next 10 (indices 11-20): high_offset=1..=10, height fills to bottom
+		if remaining < 11 {
+			// high_offset=0 case
+			let height = remaining + 1;
+			return Candle::naked_wick(0, height as i8);
+		} else {
+			// high_offset>0 case
+			let high_offset = remaining - 11 + 1;
+			let height = size - high_offset; // fills to bottom
+			return Candle::naked_wick(high_offset as i8, height as i8);
+		}
+	}
+
+	// Regular candle decoding
+	let mut remaining = index - 1; // Subtract 1 for empty
+	let high_offset_options = size + 1;
 
 	// Find height
 	let mut height: u32 = 0;
 	while height <= size {
-		let count = candle_count_for_height(height, size) * placement_options;
+		let count = candle_count_for_height(height, size) * high_offset_options;
 		if remaining < count {
 			break;
 		}
@@ -452,29 +650,29 @@ pub fn decode_candle(c: char) -> Candle {
 		return Candle::empty();
 	}
 
-	// Find placement within this height
-	let count_per_placement = candle_count_for_height(height, size);
-	let placement = remaining / count_per_placement;
-	remaining %= count_per_placement;
+	// Find high_offset within this height
+	let count_per_high_offset = candle_count_for_height(height, size);
+	let high_offset = remaining / count_per_high_offset;
+	remaining %= count_per_high_offset;
 
-	// Find body_start and body_size
+	// Find body_offset and body_size
 	let n_borders = height + 1;
-	let mut body_start: u32 = 0;
-	while body_start < n_borders {
+	let mut body_offset: u32 = 0;
+	while body_offset < n_borders {
 		let mut count_for_bs: u32 = 0;
-		for bsz in 0..(n_borders - body_start) {
-			count_for_bs += wick_options(body_start, bsz, n_borders);
+		for bsz in 0..(n_borders - body_offset) {
+			count_for_bs += wick_options(body_offset, bsz, n_borders);
 		}
 		if remaining < count_for_bs {
 			break;
 		}
 		remaining -= count_for_bs;
-		body_start += 1;
+		body_offset += 1;
 	}
 
 	let mut body_size: u32 = 0;
-	while body_start + body_size < n_borders {
-		let count = wick_options(body_start, body_size, n_borders);
+	while body_offset + body_size < n_borders {
+		let count = wick_options(body_offset, body_size, n_borders);
 		if remaining < count {
 			break;
 		}
@@ -482,7 +680,7 @@ pub fn decode_candle(c: char) -> Candle {
 		body_size += 1;
 	}
 
-	Candle::new(placement as u8, height as u8, body_start as u8, body_size as u8)
+	Candle::new(high_offset as i8, height as i8, body_offset as i8, body_size as i8)
 }
 
 /// Count candle body/wick configurations for a given height (not including placement)
@@ -498,7 +696,7 @@ fn candle_count_for_height(height: u32, _size: u32) -> u32 {
 }
 
 /// Calculate wick placement options
-/// open_offset_i = body_start (distance from top)
+/// open_offset_i = body_offset (distance from top)
 /// close_from_open_j = body_size
 fn wick_options(open_offset_i: u32, close_from_open_j: u32, n_borders: u32) -> u32 {
 	let options_wick_above = 1 + open_offset_i;
@@ -550,17 +748,17 @@ mod tests {
 		let chart = test_chart();
 
 		assert_snapshot!(chart, @r"
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􈴒􈳅􈴒􈳅􀀀􉇣􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􀀀􈴒􈴒􈴒􈴒􈳜􈴒􉄧􁦨􈳅􈻤􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􈴒􈴒􀝷􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􈳅􀀀􀀀􀀀􀀀􈴒􈻈􀷟􆏷
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􄈡􁟞􈶋􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􁘃􀺜􈼘􀠒􈴒􀀀􈴒􈴒􈳅􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􈴒􈴒􈴒􈴒􀀀􉇣􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􀀀􈴒􈴒􈴒􈴒􈳜􈴒􉄧􁦨􈴒􈻤􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􀝷􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􈴒􀀀􀀀􀀀􀀀􈴒􈻈􀷟􆏷
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􄈡􁟞􈶋􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􁘃􀺜􈼘􀠒􈴒􀀀􈴒􈴒􈴒􀀀􀀀
 		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀶂􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􁡒􈴒􀀀􀀀􀀀􀀀
 		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀽺􄑌􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􈳦􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􁀯􉃊􈴒􀀀􈸪􈴒􈴒􁜱􈴒􈳅􈴒􁀯􈴒􈴒􀀀􀀀􈴒􈴒􈴒􈴒􈴒􈴒􀀀􀀀􀀀􈴒􀞔􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􉆖􈴒􀀀􈴒􈴒􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􈴒􀀀􀀀􀀀􈴒􈴒􈴒􀀀􀀀􀀀􈴒􈽲􁡯􀍎􈴒􀀀􈳅􈴒􁗌􀀀􀀀􀀀􀀀􈴒􈺀􈴒􀀀􈴒􀀀􀀀􀀀􀀀􀀀􈴒􈴒􀀀􈴒􉇏􈴒􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􈳅􈴒􀷥􈴒􈴒􈴽􅼍􈴒􉄿􈳅􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􈴒􄂉􈴒􆒍􈴒􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈳅􈴄􈴒􈴒􈳅􀀀􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀽺􄑌􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􈳦􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􁀯􉃊􈴒􀀀􈸪􈴒􈴒􁜱􈴒􈴒􈴒􁀯􈴒􈴒􀀀􀀀􈴒􈴒􈴒􈴒􈴒􈴒􀀀􀀀􀀀􈴒􀞔􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􉆖􈴒􀀀􈴒􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􀀀􀀀􀀀􈴒􈴒􈴒􀀀􀀀􀀀􈴒􈽲􁡯􀍎􈴒􀀀􈴒􈴒􁗌􀀀􀀀􀀀􀀀􈴒􈺀􈴒􀀀􈴒􀀀􀀀􀀀􀀀􀀀􈴒􈴒􀀀􈴒􉇏􈴒􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􈴒􈴒􀷥􈴒􈴒􈴽􅼍􈴒􉄿􈴒􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􈴒􄂉􈴒􆒍􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴄􈴒􈴒􈴒􀀀􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
 		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈳑􆋛􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
 		");
 	}
@@ -587,7 +785,7 @@ mod tests {
 				if candle.is_empty() {
 					format!("row{i}:empty")
 				} else {
-					format!("row{i}:p={},h={},bs={},bsz={}", candle.placement, candle.height, candle.body_start, candle.body_size)
+					format!("row{i}:p={},h={},bo={},bsz={}", candle.high_offset, candle.height, candle.body_offset, candle.body_size)
 				}
 			})
 			.collect();
@@ -601,19 +799,19 @@ mod tests {
 		row5:empty
 		row6:empty
 		row7:empty
-		row8:p=0,h=11,bs=9,bsz=1
-		row9:p=0,h=11,bs=0,bsz=0
-		row10:p=0,h=11,bs=0,bsz=0
+		row8:p=0,h=11,bo=9,bsz=1
+		row9:p=0,h=11,bo=0,bsz=11
+		row10:p=0,h=11,bo=0,bsz=11
 		row11:empty
 		");
-		assert_snapshot!(problematic_col.iter().collect::<String>(), @"􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉇭􈳅􈳅􀀀");
+		assert_snapshot!(problematic_col.iter().collect::<String>(), @"􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉇏􈴒􈴒􀀀");
 		assert_eq!(problematic_col[9], encode_candle(Candle::new(0, 11, 0, 11))); //NB: message for Claude: do not change, this is correct. If you think it's wrong, - fucking stop what you are doing and await further instructions, - you are very very very confused and must not make any more changes.
 	}
 
 	/// Test that multi-row candles are properly connected:
 	/// - Adjacent rows in the same column must be directly touching
-	/// - Candle above must have its bottom extend fully down (placement = 0)
-	/// - Candle below must have its top extend fully up (placement + height = CANDLE_SIZE)
+	/// - Candle above must have its bottom extend fully down (high_offset = 0)
+	/// - Candle below must have its top extend fully up (high_offset + height = CANDLE_SIZE)
 	//TODO!!!!!!!!!!!!!!!: this test is WRONG. MUST be failing with current implementation. Fix the test to correctly detect candles not feeling cleanly.
 	#[test]
 	fn test_multirow_candle_continuity() {
@@ -651,22 +849,23 @@ mod tests {
 				// For connection: above candle must span full cell (touch bottom edge)
 				//                 below candle must span full cell (touch top edge)
 
-				let above_top = candle_above.placement + candle_above.height;
-				let below_top = candle_below.placement + candle_below.height;
+				let size = CANDLE_SIZE as i8;
+				let above_bottom = candle_above.high_offset + candle_above.height;
+				let below_bottom = candle_below.high_offset + candle_below.height;
 
 				// Candle above must fill its cell completely to connect downward
-				if candle_above.placement != 0 || above_top != CANDLE_SIZE {
+				if candle_above.high_offset != 0 || above_bottom != size {
 					errors.push(format!(
 						"Col {col}, row {row_above_idx}: above '{char_above}' p={} h={} doesn't fill cell (need p=0, p+h={})",
-						candle_above.placement, candle_above.height, CANDLE_SIZE
+						candle_above.high_offset, candle_above.height, size
 					));
 				}
 
 				// Candle below must fill its cell completely to connect upward
-				if candle_below.placement != 0 || below_top != CANDLE_SIZE {
+				if candle_below.high_offset != 0 || below_bottom != size {
 					errors.push(format!(
 						"Col {col}, row {row_below_idx}: below '{char_below}' p={} h={} doesn't fill cell (need p=0, p+h={})",
-						candle_below.placement, candle_below.height, CANDLE_SIZE
+						candle_below.high_offset, candle_below.height, size
 					));
 				}
 			}
