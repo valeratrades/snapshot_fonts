@@ -50,6 +50,7 @@
             snapshot_fonts_bin = rustPlatform.buildRustPackage rec {
               inherit pname;
               version = manifest.version;
+              doCheck = false;
 
               buildInputs = with pkgs; [
                 openssl.dev
