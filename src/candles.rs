@@ -536,13 +536,42 @@ mod tests {
 			.filter_map(|line| line.chars().nth(53))
 			.collect();
 
+		let decoded: Vec<String> = problematic_col
+			.iter()
+			.enumerate()
+			.map(|(i, &c)| {
+				let candle = decode_candle(c);
+				if candle.is_empty() {
+					format!("row{i}:empty")
+				} else {
+					format!("row{i}:p={},h={},bs={},bsz={}", candle.placement, candle.height, candle.body_start, candle.body_size)
+				}
+			})
+			.collect();
+
+		assert_snapshot!(decoded.join("\n"), @r"
+		row0:empty
+		row1:empty
+		row2:empty
+		row3:empty
+		row4:empty
+		row5:empty
+		row6:empty
+		row7:empty
+		row8:p=0,h=11,bs=10,bsz=0
+		row9:p=0,h=11,bs=0,bsz=0
+		row10:p=0,h=11,bs=0,bsz=0
+		row11:empty
+		");
 		assert_snapshot!(problematic_col.iter().collect::<String>(), @"􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉇭􈳅􈳅􀀀");
+		assert_eq!(problematic_col[9], encode_candle(Candle::new(0, 11, 0, 11))); //NB: message for Claude: do not change, this is correct. If you think it's wrong, - fucking stop what you are doing and await further instructions, - you are very very very confused and must not make any more changes.
 	}
 
 	/// Test that multi-row candles are properly connected:
 	/// - Adjacent rows in the same column must be directly touching
 	/// - Candle above must have its bottom extend fully down (placement = 0)
 	/// - Candle below must have its top extend fully up (placement + height = CANDLE_SIZE)
+	//TODO!!!!!!!!!!!!!!!: this test is WRONG. MUST be failing with current implementation. Fix the test to correctly detect candles not feeling cleanly.
 	#[test]
 	fn test_multirow_candle_continuity() {
 		let chart = test_chart();
