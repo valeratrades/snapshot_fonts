@@ -518,6 +518,25 @@ mod tests {
 		");
 	}
 
+	/// Single candle spanning 3 rows - must render as continuous vertical bar
+	/// From debug: OHLC open=99.96, high=99.96, low=99.51, close=99.95
+	/// With price range ~98.73 to ~103.50, this spans global levels 23-37
+	/// which crosses rows 8, 9, 10 (each row = 12 levels)
+	#[test]
+	fn test_single_candle_spanning_three_rows() {
+		let chart = test_chart();
+
+		#[rustfmt::skip]
+		let problematic_col: Vec<char> = chart
+			.lines()
+			.filter_map(|line| line.chars().nth(53))
+			.collect();
+
+		dbg!(&problematic_col);
+
+		assert_snapshot!(problematic_col.iter().collect::<String>(), @"􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀯬􀀌􀀀􀀀");
+	}
+
 	/// Test that multi-row candles are properly connected:
 	/// - Adjacent rows in the same column must be directly touching
 	/// - Candle above must have its bottom extend fully down (placement = 0)
