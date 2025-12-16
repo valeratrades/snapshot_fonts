@@ -70,10 +70,22 @@ impl CandleGlyph {
 }
 
 /// Generate all candle glyphs with precomputed geometry
+///
+/// Coordinate system:
+/// - Font Y=0 is at bottom of cell, increasing upward
+/// - Cell bottom: -HHEA_DESCENT, Cell top: -HHEA_DESCENT + LINE_HEIGHT
+/// - `placement` is offset from TOP of cell (0 = at top, 11 = at bottom)
+/// - Candle extends DOWN from placement, so:
+///   - Wick top (HIGH) at: cell_top - placement * LEVEL_HEIGHT
+///   - Wick bottom (LOW) at: wick_top - height * LEVEL_HEIGHT
+/// - Body is within the wick:
+///   - Body top at: wick_top - body_start * LEVEL_HEIGHT
+///   - Body bottom at: body_top - body_size * LEVEL_HEIGHT (or DOJI_HEIGHT if body_size=0)
 fn generate_all_glyphs() -> Vec<CandleGlyph> {
 	let mut glyphs = Vec::with_capacity(CANDLE_GLYPH_COUNT as usize);
 	let mut char_code = CANDLE_PUA_START;
 	let size = CANDLE_SIZE as i32;
+	let cell_top = -HHEA_DESCENT + LINE_HEIGHT;
 
 	// Index 0: empty candle
 	glyphs.push(CandleGlyph { char_code, wick: None, body: None });
@@ -85,7 +97,10 @@ fn generate_all_glyphs() -> Vec<CandleGlyph> {
 
 		// For each placement p (0..=SIZE)
 		for p in 0..=size {
-			let base_y = -HHEA_DESCENT + p * LEVEL_HEIGHT;
+			// Wick top (HIGH) - placement levels down from cell top
+			let wick_top_y = cell_top - p * LEVEL_HEIGHT;
+			// Wick bottom (LOW) - height levels down from wick top
+			let wick_bottom_y = wick_top_y - h * LEVEL_HEIGHT;
 
 			// For each body configuration
 			for body_start in 0..n_borders {
@@ -93,19 +108,15 @@ fn generate_all_glyphs() -> Vec<CandleGlyph> {
 					let options_wick_above = 1 + body_start;
 					let options_wick_below = n_borders - (body_start + body_size);
 
-					// Generate all wick combinations
-					for wick_above in 0..options_wick_above {
-						for wick_below in 0..options_wick_below {
-							let candle_top = base_y + h * LEVEL_HEIGHT;
-							let candle_bottom = base_y;
-
-							// Body position
-							let body_top_y = candle_top - body_start * LEVEL_HEIGHT;
+					// Generate all wick combinations (these are for the encoding, not geometry)
+					// We generate glyphs for each wick option but the actual geometry
+					// is determined by placement/height/body_start/body_size only
+					for _wick_above in 0..options_wick_above {
+						for _wick_below in 0..options_wick_below {
+							// Body top - body_start levels down from wick top
+							let body_top_y = wick_top_y - body_start * LEVEL_HEIGHT;
+							// Body bottom - body_size levels down from body top (or DOJI_HEIGHT for doji)
 							let body_bottom_y = if body_size == 0 { body_top_y - DOJI_HEIGHT } else { body_top_y - body_size * LEVEL_HEIGHT };
-
-							// Wick position (clamped to candle bounds)
-							let wick_top_y = (body_top_y + wick_above * LEVEL_HEIGHT).min(candle_top);
-							let wick_bottom_y = (body_bottom_y - wick_below * LEVEL_HEIGHT).max(candle_bottom);
 
 							let wick = Rect {
 								left: WICK_LEFT,
@@ -155,6 +166,28 @@ pub struct Candle {
 }
 
 impl Candle {
+	/// Create a new candle with the specified geometry.
+	///
+	/// # Parameters
+	/// - `placement`: Offset of the entire candle from the top of the char cell (0-11).
+	///   This is where the wick starts (the HIGH point).
+	/// - `height`: The total height of the candle (wick span from high to low).
+	///   The candle extends from `placement` to `placement + height`.
+	/// - `body_start`: Offset from `placement` to the body top (0 to height).
+	///   If `body_start == 0`, body starts at the same level as the wick top (no top wick).
+	/// - `body_size`: Size of the body (0 = doji, drawn as thin line).
+	///   Body extends from `placement + body_start` to `placement + body_start + body_size`.
+	///
+	/// # Geometry (all offsets from top of char cell)
+	/// - Wick top (HIGH): at `placement`
+	/// - Top wick: from `placement` to `placement + body_start` (length = body_start)
+	/// - Body top: at `placement + body_start`
+	/// - Body bottom: at `placement + body_start + body_size`
+	/// - Bottom wick: from `placement + body_start + body_size` to `placement + height`
+	/// - Wick bottom (LOW): at `placement + height`
+	///
+	/// The rendering approach: first draw wick from `placement` through `placement + height`,
+	/// then overlap body on top.
 	pub fn new(placement: u8, height: u8, body_start: u8, body_size: u8) -> Self {
 		debug_assert!(placement <= CANDLE_SIZE);
 		debug_assert!(height <= CANDLE_SIZE);
@@ -277,6 +310,8 @@ impl SnapshotCandles {
 		}
 
 		// Build rows from top to bottom
+		// Note: levels increase upward (0 = min price, total_levels-1 = max price)
+		// But placement is offset from TOP of cell (0 = top of cell)
 		let mut rows: Vec<String> = Vec::with_capacity(self.height);
 		for row in (0..self.height).rev() {
 			let row_bottom = row * levels_per_row;
@@ -294,19 +329,21 @@ impl SnapshotCandles {
 				let extends_below = low < row_bottom;
 				let extends_above = high > row_top;
 
-				// For visual continuity of multi-row candles, fill the entire cell
-				// when candle extends to adjacent rows
+				// Wick bounds within this row (in row-local coordinates, 0 = row_bottom)
+				// For multi-row continuity: if candle extends in EITHER direction, fill entire cell
+				// This ensures seamless visual connection between adjacent rows
 				let fills_cell = extends_below || extends_above;
 
-				// Wick bounds within this row
+				// We use "exclusive" bounds: low and high represent the number of levels from row_bottom
 				let local_low = if fills_cell { 0 } else { low - row_bottom };
-				let local_high = if fills_cell { CANDLE_SIZE as usize } else { high - row_bottom };
+				let local_high = if fills_cell { levels_per_row } else { high - row_bottom + 1 };
 
-				// placement = where candle low sits in this row (0-11)
-				let placement = local_low;
+				// Convert to new coordinate system where 0 = top of cell
+				// placement = offset from top of cell to wick top (HIGH point)
+				let placement = levels_per_row - local_high;
 
-				// height = wick span within this row
-				let height = local_high.saturating_sub(local_low);
+				// height = wick span (from high to low)
+				let height = local_high - local_low;
 
 				// Body bounds (in global levels)
 				let body_top_global = open.max(close);
@@ -317,14 +354,20 @@ impl SnapshotCandles {
 					// Body doesn't intersect this row - just wick
 					(0, 0)
 				} else {
-					// Body intersects - clamp to row
-					let local_body_bottom = if body_bottom_global < row_bottom { 0 } else { body_bottom_global - row_bottom };
-					let local_body_top = if body_top_global > row_top { CANDLE_SIZE as usize } else { body_top_global - row_bottom };
+					// Body intersects - clamp to row boundaries
+					let body_extends_below = body_bottom_global < row_bottom;
+					let body_extends_above = body_top_global > row_top;
+					let body_fills_cell = body_extends_below || body_extends_above;
 
-					// body_start = offset from wick top to body top
-					let bs = local_high.saturating_sub(local_body_top).min(height);
+					// Use same exclusive bounds convention as wick
+					let local_body_bottom = if body_fills_cell { 0 } else { body_bottom_global - row_bottom };
+					let local_body_top = if body_fills_cell { levels_per_row } else { body_top_global - row_bottom + 1 };
+
+					// body_start = offset from placement to body top
+					// local_high is the exclusive top of wick, local_body_top is exclusive top of body
+					let bs = local_high - local_body_top;
 					// body_size = body span
-					let bsz = local_body_top.saturating_sub(local_body_bottom).min(height.saturating_sub(bs));
+					let bsz = local_body_top - local_body_bottom;
 					(bs, bsz)
 				};
 
@@ -507,18 +550,18 @@ mod tests {
 		let chart = test_chart();
 
 		assert_snapshot!(chart, @r"
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉇣􉆨􉅏􉆨􈳅􉇣􈳅􀀀􉈃􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉈃􉇣􀀀􈴒􈳦􈳦􈳜􈴩􈴉􉅻􀲼􈳅􈾕􉈎􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􈴒􈳯􀎁􈳑􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴍􀀀􀀀􈳅􀀀􀀀􀀀􀀀􉆨􈽲􀞫􃸍
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉈎􂕍􀻢􈸪􈳯􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀽝􀜘􈾤􀍎􉆨􀀀􉈃􈴐􈳅􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉅏􀝩􈳦􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳾􀶂􈳑􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􈴒􈳅􈴒􈳅􀀀􉇣􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􀀀􈴒􈴒􈴒􈴒􈳜􈴒􉄧􁦨􈳅􈻤􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􈴒􈴒􀝷􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􈳅􀀀􀀀􀀀􀀀􈴒􈻈􀷟􆏷
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􄈡􁟞􈶋􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􁘃􀺜􈼘􀠒􈴒􀀀􈴒􈴒􈳅􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀶂􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􁡒􈴒􀀀􀀀􀀀􀀀
 		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉈎􉈃􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􉅏􉆨􀀀􀀀􀀀􀀀􀀀􀀀􉈃􀚦􂛚􉅏􉈃􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈻬􈳯􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉈃􈴄􈳑􈴽􈾟􉈃􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉇣􀘚􉄿􉈎􀀀􈻘􈳦􈳦􀹯􈾟􈳅􉇣􀘚􉈃􈴍􀀀􀀀􈳑􈳷􉁆􉈃􅸚􈸹􀀀􀀀􀀀􉅏􀎔􈳾􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􉇏􉆨􀀀􉈎􉆨􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􈴐􀀀􀀀􀀀􈳦􈳦􈻬􀀀􀀀􀀀􉆨􉀐􀶑􀇀􈳦􀀀􈳅􈳷􀼴􀀀􀀀􀀀􀀀􈳯􈼘􈳦􀀀􈳑􀀀􀀀􀀀􀀀􀀀􈳦􈳯􀀀􈴐􉇭􉈎􉁆􈳯􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􈳅􈳦􀞱􈳷􈳦􈶵􄀚􉈃􉆖􈳅􀀀􀀀􀀀􀀀􀀀􈶕􀀀􀀀􀀀􀀀􀀀􀀀􈴉􂠩􉈃􃹿􈴍􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􈳑􈳑􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳑􈳅􈵹􉃘􉈎􈳅􀀀􈻬􈳜􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳯􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳯􈳷􈴓􃴴􈴉􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀽺􄑌􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􈳦􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􁀯􉃊􈴒􀀀􈸪􈴒􈴒􁜱􈴒􈳅􈴒􁀯􈴒􈴒􀀀􀀀􈴒􈴒􈴒􈴒􈴒􈴒􀀀􀀀􀀀􈴒􀞔􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􉆖􈴒􀀀􈴒􈴒􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􈴒􀀀􀀀􀀀􈴒􈴒􈴒􀀀􀀀􀀀􈴒􈽲􁡯􀍎􈴒􀀀􈳅􈴒􁗌􀀀􀀀􀀀􀀀􈴒􈺀􈴒􀀀􈴒􀀀􀀀􀀀􀀀􀀀􈴒􈴒􀀀􈴒􉇏􈴒􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􈳅􈴒􀷥􈴒􈴒􈴽􅼍􈴒􉄿􈳅􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􈴒􄂉􈴒􆒍􈴒􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈳅􈴄􈴒􈴒􈳅􀀀􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈳑􆋛􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
 		");
 	}
 
@@ -558,7 +601,7 @@ mod tests {
 		row5:empty
 		row6:empty
 		row7:empty
-		row8:p=0,h=11,bs=10,bsz=0
+		row8:p=0,h=11,bs=9,bsz=1
 		row9:p=0,h=11,bs=0,bsz=0
 		row10:p=0,h=11,bs=0,bsz=0
 		row11:empty
