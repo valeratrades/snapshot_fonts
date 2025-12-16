@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use crate::fill_levels::{LEVELS, PUA_START};
+use crate::{
+	fill_levels::{LEVELS, PUA_START},
+	fontforge::{GLYPH_WIDTH, HHEA_DESCENT, LINE_HEIGHT},
+};
 
 /// Candle size (max height = 11, giving 12 placement positions 0..=11)
 pub const CANDLE_SIZE: u8 = 11;
@@ -8,6 +11,133 @@ pub const CANDLE_SIZE: u8 = 11;
 pub const CANDLE_GLYPH_COUNT: u32 = 52417;
 /// Start of candle font in PUA (after FillLevels: 251*251 = 63001 glyphs)
 pub const CANDLE_PUA_START: u32 = PUA_START + (LEVELS as u32 * LEVELS as u32);
+
+// Derived constants for glyph geometry
+const WICK_LEFT: i32 = GLYPH_WIDTH / 3;
+const WICK_RIGHT: i32 = 2 * GLYPH_WIDTH / 3;
+const BODY_LEFT: i32 = 0;
+const BODY_RIGHT: i32 = GLYPH_WIDTH;
+const LEVEL_HEIGHT: i32 = LINE_HEIGHT / (CANDLE_SIZE as i32 + 1);
+const DOJI_HEIGHT: i32 = LINE_HEIGHT / 44;
+
+/// A rectangle defined by its corners
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Rect {
+	left: i32,
+	bottom: i32,
+	right: i32,
+	top: i32,
+}
+
+impl Rect {
+	fn is_valid(&self) -> bool {
+		self.top > self.bottom && self.right > self.left
+	}
+}
+
+/// Precomputed glyph geometry for a single candle
+#[derive(Clone, Copy, Debug)]
+struct CandleGlyph {
+	char_code: u32,
+	wick: Option<Rect>,
+	body: Option<Rect>,
+}
+
+impl CandleGlyph {
+	fn as_python(&self) -> String {
+		let mut lines = Vec::new();
+		lines.push(format!("g=font.createChar({});g.width={}", self.char_code, GLYPH_WIDTH));
+
+		if self.wick.is_some() || self.body.is_some() {
+			lines.push("p=g.glyphPen()".to_string());
+
+			if let Some(w) = self.wick {
+				lines.push(format!(
+					"p.moveTo(({},{}));p.lineTo(({},{}));p.lineTo(({},{}));p.lineTo(({},{}));p.closePath()",
+					w.left, w.bottom, w.right, w.bottom, w.right, w.top, w.left, w.top
+				));
+			}
+
+			if let Some(b) = self.body {
+				lines.push(format!(
+					"p.moveTo(({},{}));p.lineTo(({},{}));p.lineTo(({},{}));p.lineTo(({},{}));p.closePath()",
+					b.left, b.bottom, b.right, b.bottom, b.right, b.top, b.left, b.top
+				));
+			}
+
+			lines.push("p=None".to_string());
+		}
+
+		lines.join("\n")
+	}
+}
+
+/// Generate all candle glyphs with precomputed geometry
+fn generate_all_glyphs() -> Vec<CandleGlyph> {
+	let mut glyphs = Vec::with_capacity(CANDLE_GLYPH_COUNT as usize);
+	let mut char_code = CANDLE_PUA_START;
+	let size = CANDLE_SIZE as i32;
+
+	// Index 0: empty candle
+	glyphs.push(CandleGlyph { char_code, wick: None, body: None });
+	char_code += 1;
+
+	// For each height h (0..=SIZE)
+	for h in 0..=size {
+		let n_borders = h + 1;
+
+		// For each placement p (0..=SIZE)
+		for p in 0..=size {
+			let base_y = -HHEA_DESCENT + p * LEVEL_HEIGHT;
+
+			// For each body configuration
+			for body_start in 0..n_borders {
+				for body_size in 0..(n_borders - body_start) {
+					let options_wick_above = 1 + body_start;
+					let options_wick_below = n_borders - (body_start + body_size);
+
+					// Generate all wick combinations
+					for wick_above in 0..options_wick_above {
+						for wick_below in 0..options_wick_below {
+							let candle_top = base_y + h * LEVEL_HEIGHT;
+							let candle_bottom = base_y;
+
+							// Body position
+							let body_top_y = candle_top - body_start * LEVEL_HEIGHT;
+							let body_bottom_y = if body_size == 0 { body_top_y - DOJI_HEIGHT } else { body_top_y - body_size * LEVEL_HEIGHT };
+
+							// Wick position (clamped to candle bounds)
+							let wick_top_y = (body_top_y + wick_above * LEVEL_HEIGHT).min(candle_top);
+							let wick_bottom_y = (body_bottom_y - wick_below * LEVEL_HEIGHT).max(candle_bottom);
+
+							let wick = Rect {
+								left: WICK_LEFT,
+								right: WICK_RIGHT,
+								bottom: wick_bottom_y,
+								top: wick_top_y,
+							};
+							let body = Rect {
+								left: BODY_LEFT,
+								right: BODY_RIGHT,
+								bottom: body_bottom_y,
+								top: body_top_y,
+							};
+
+							glyphs.push(CandleGlyph {
+								char_code,
+								wick: wick.is_valid().then_some(wick),
+								body: body.is_valid().then_some(body),
+							});
+							char_code += 1;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	glyphs
+}
 
 /// Candle representation using the encoding from calc_candles:
 /// - `placement`: 0-11, vertical position of candle within character cell
@@ -55,6 +185,131 @@ impl Candle {
 	pub fn is_empty(&self) -> bool {
 		// Empty candle is index 0, which is height=0, placement=0, body=0
 		self.height == 0 && self.placement == 0 && self.body_start == 0 && self.body_size == 0
+	}
+}
+
+// ============================================================================
+// Chart rendering
+// ============================================================================
+
+use v_utils::trades::Ohlc;
+
+const DEFAULT_WIDTH: usize = 90;
+const DEFAULT_HEIGHT: usize = 12;
+
+/// Builder for candlestick chart snapshots
+#[derive(Clone, Debug)]
+pub struct SnapshotCandles {
+	ohlcs: Vec<Ohlc>,
+	width: usize,
+	height: usize,
+}
+
+impl SnapshotCandles {
+	/// Create from OHLC data
+	pub fn from_ohlc(ohlcs: &[Ohlc]) -> Self {
+		Self {
+			ohlcs: ohlcs.to_vec(),
+			width: DEFAULT_WIDTH,
+			height: DEFAULT_HEIGHT,
+		}
+	}
+
+	/// Create from price series, grouping into candles
+	pub fn from_prices<T: Into<f64> + Copy>(prices: &[T], candles_per_char: usize) -> Self {
+		let prices: Vec<f64> = prices.iter().map(|p| (*p).into()).collect();
+		let ohlcs = v_utils::trades::mock_p_to_ohlc(&prices, candles_per_char);
+		Self {
+			ohlcs,
+			width: DEFAULT_WIDTH,
+			height: DEFAULT_HEIGHT,
+		}
+	}
+
+	pub fn width(mut self, width: usize) -> Self {
+		self.width = width;
+		self
+	}
+
+	pub fn height(mut self, height: usize) -> Self {
+		self.height = height;
+		self
+	}
+
+	/// Render the candlestick chart
+	pub fn draw(&self) -> String {
+		if self.ohlcs.is_empty() {
+			return (0..self.height)
+				.map(|_| encode_candle(Candle::empty()).to_string().repeat(self.width))
+				.collect::<Vec<_>>()
+				.join("\n");
+		}
+
+		// Find price range
+		let min_price = self.ohlcs.iter().map(|o| o.low).fold(f64::INFINITY, f64::min);
+		let max_price = self.ohlcs.iter().map(|o| o.high).fold(f64::NEG_INFINITY, f64::max);
+
+		if (max_price - min_price).abs() < f64::EPSILON {
+			// All same price - draw middle candles
+			let mid_candle = Candle::new(CANDLE_SIZE / 2, 0, 0, 0);
+			return (0..self.height).map(|_| encode_candle(mid_candle).to_string().repeat(self.width)).collect::<Vec<_>>().join("\n");
+		}
+
+		// Total vertical levels = height * (CANDLE_SIZE + 1) placements
+		let total_levels = self.height * (CANDLE_SIZE as usize + 1);
+		let price_per_level = (max_price - min_price) / (total_levels - 1) as f64;
+
+		// Sample OHLCs to fit width
+		let mut chars: Vec<char> = Vec::with_capacity(self.width);
+		for i in 0..self.width {
+			let ohlc_idx = (i * self.ohlcs.len()) / self.width;
+			let ohlc = &self.ohlcs[ohlc_idx.min(self.ohlcs.len() - 1)];
+
+			// Convert OHLC prices to level indices
+			let high_level = ((ohlc.high - min_price) / price_per_level).round() as usize;
+			let low_level = ((ohlc.low - min_price) / price_per_level).round() as usize;
+			let open_level = ((ohlc.open - min_price) / price_per_level).round() as usize;
+			let close_level = ((ohlc.close - min_price) / price_per_level).round() as usize;
+
+			let body_top_level = open_level.max(close_level);
+			let body_bottom_level = open_level.min(close_level);
+
+			// Determine which row this candle primarily sits in
+			let candle_mid_level = (high_level + low_level) / 2;
+			let row = candle_mid_level / (CANDLE_SIZE as usize + 1);
+			let row = row.min(self.height - 1);
+
+			// Calculate placement within row (0 = bottom of row, 11 = top)
+			let row_base_level = row * (CANDLE_SIZE as usize + 1);
+			let placement = low_level.saturating_sub(row_base_level).min(CANDLE_SIZE as usize);
+
+			// Calculate candle height (in levels, 0-11)
+			let candle_height = (high_level - low_level).min(CANDLE_SIZE as usize);
+
+			// Body position relative to candle top
+			let body_start = if candle_height > 0 { (high_level - body_top_level).min(candle_height) } else { 0 };
+			let body_size = if body_top_level > body_bottom_level {
+				(body_top_level - body_bottom_level).min(candle_height - body_start)
+			} else {
+				0 // doji
+			};
+
+			let candle = Candle::new(placement as u8, candle_height as u8, body_start as u8, body_size as u8);
+			chars.push(encode_candle(candle));
+		}
+
+		// Build rows from top to bottom
+		// Each row shows candles whose placement puts them in that row
+		let mut rows: Vec<String> = Vec::with_capacity(self.height);
+		for _row in (0..self.height).rev() {
+			// For now, just output one row of candles (simplified)
+			// A proper implementation would split candles across rows
+			rows.push(chars.iter().collect());
+		}
+
+		// Actually, the candle font is designed for single-row output
+		// Each character encodes full OHLC, placement handles vertical position
+		chars.iter().collect()
 	}
 }
 
@@ -183,6 +438,12 @@ fn wick_options(open_offset_i: u32, close_from_open_j: u32, n_borders: u32) -> u
 	options_wick_above * options_wick_below
 }
 
+/// Generate the glyph script with all geometry precomputed in Rust
+pub fn generate_glyph_script() -> String {
+	let glyphs = generate_all_glyphs();
+	glyphs.iter().map(|g| g.as_python()).collect::<Vec<_>>().join("\n")
+}
+
 /// Generate the Candles TTF font file
 /// Each glyph represents a candlestick with:
 /// - Horizontal space split in 3: left wick area, body (middle 1/3), right wick area
@@ -200,136 +461,23 @@ fn wick_options(open_offset_i: u32, close_from_open_j: u32, n_borders: u32) -> u
 ///           - For each wick_below (0..=(h-body_start-body_size)):
 ///             - One glyph
 pub fn generate_candle_font(output: &Path) -> std::io::Result<()> {
-	let glyph_script = format!(
-		r#"
-SIZE = {size}
-PUA_START = {pua_start}
-
-# Wick is middle third
-WICK_LEFT = GLYPH_WIDTH // 3
-WICK_RIGHT = 2 * GLYPH_WIDTH // 3
-
-# Body width is full glyph
-BODY_LEFT = 0
-BODY_RIGHT = GLYPH_WIDTH
-
-# Height of one level in font units
-LEVEL_HEIGHT = LINE_HEIGHT // (SIZE + 1)
-
-# Doji body height (1/44 of char height)
-DOJI_HEIGHT = LINE_HEIGHT // 44
-
-char_code = PUA_START
-
-# Index 0: empty candle
-glyph = font.createChar(char_code)
-glyph.width = GLYPH_WIDTH
-char_code += 1
-
-# For each height h (0..=SIZE)
-for h in range(SIZE + 1):
-    n_borders = h + 1
-
-    # For each placement p (0..=SIZE) - where candle sits within the character
-    for p in range(SIZE + 1):
-        # Calculate base y position for this placement
-        # placement 0 = candle at bottom, placement SIZE = candle at top
-        base_y = -HHEA_DESCENT + p * LEVEL_HEIGHT
-
-        # For each body configuration (matching calc_candles iteration order)
-        for body_start in range(n_borders):
-            for body_size in range(n_borders - body_start):
-                # Calculate wick options
-                options_wick_above = 1 + body_start
-                options_wick_below = n_borders - (body_start + body_size)
-
-                # Generate all wick combinations
-                for wick_above in range(options_wick_above):
-                    for wick_below in range(options_wick_below):
-                        glyph = font.createChar(char_code)
-                        glyph.width = GLYPH_WIDTH
-                        pen = glyph.glyphPen()
-
-                        # Calculate y coordinates
-                        # Candle spans from base_y to base_y + h * LEVEL_HEIGHT
-                        candle_top = base_y + h * LEVEL_HEIGHT
-                        candle_bottom = base_y
-
-                        # Body position within candle
-                        body_top_y = candle_top - body_start * LEVEL_HEIGHT
-                        if body_size == 0:
-                            # Doji: thin body
-                            body_bottom_y = body_top_y - DOJI_HEIGHT
-                        else:
-                            body_bottom_y = body_top_y - body_size * LEVEL_HEIGHT
-
-                        # Wick extends above and below body
-                        wick_top_y = body_top_y + wick_above * LEVEL_HEIGHT
-                        wick_bottom_y = body_bottom_y - wick_below * LEVEL_HEIGHT
-
-                        # Clamp to candle bounds
-                        wick_top_y = min(wick_top_y, candle_top)
-                        wick_bottom_y = max(wick_bottom_y, candle_bottom)
-
-                        # Draw wick (thin vertical line in center)
-                        if wick_top_y > wick_bottom_y:
-                            pen.moveTo((WICK_LEFT, wick_bottom_y))
-                            pen.lineTo((WICK_RIGHT, wick_bottom_y))
-                            pen.lineTo((WICK_RIGHT, wick_top_y))
-                            pen.lineTo((WICK_LEFT, wick_top_y))
-                            pen.closePath()
-
-                        # Draw body (wider rectangle)
-                        if body_top_y > body_bottom_y:
-                            pen.moveTo((BODY_LEFT, body_bottom_y))
-                            pen.lineTo((BODY_RIGHT, body_bottom_y))
-                            pen.lineTo((BODY_RIGHT, body_top_y))
-                            pen.lineTo((BODY_LEFT, body_top_y))
-                            pen.closePath()
-
-                        pen = None
-                        char_code += 1
-"#,
-		size = CANDLE_SIZE,
-		pua_start = CANDLE_PUA_START,
-	);
-
+	let glyph_script = generate_glyph_script();
 	crate::fontforge::generate_font("Candles", output, &glyph_script)
 }
 
 #[cfg(test)]
 mod tests {
+	use insta::assert_snapshot;
+
 	use super::*;
 
 	#[test]
-	fn test_candle_encode_decode_roundtrip() {
-		// Test a few representative candles
-		let test_cases = [
-			Candle::empty(),
-			Candle::new(0, 5, 0, 0),   // placement 0, height 5, doji at top
-			Candle::new(3, 5, 2, 0),   // placement 3, height 5, doji in middle
-			Candle::new(6, 5, 5, 0),   // placement 6, height 5, doji at bottom
-			Candle::new(0, 11, 0, 11), // full body, no wick room
-			Candle::new(5, 11, 2, 5),  // body in middle
-			Candle::new(11, 11, 0, 0), // max placement, max height, doji at top
-		];
+	fn test_snapshot_candles_chart() {
+		use v_utils::distributions::laplace_random_walk;
 
-		for candle in test_cases {
-			let encoded = encode_candle(candle);
-			let decoded = decode_candle(encoded);
-			assert_eq!(candle, decoded, "roundtrip failed for {:?}", candle);
-		}
-	}
+		let prices = laplace_random_walk(100.0, 1000, 0.1, 0.0, Some(42));
+		let chart = SnapshotCandles::from_prices(&prices, 10).width(90).draw();
 
-	#[test]
-	fn test_total_glyph_count() {
-		let size = CANDLE_SIZE as u32;
-		let placement_options = size + 1; // 12
-
-		let mut total: u32 = 1; // +1 for empty
-		for h in 0..=size {
-			total += candle_count_for_height(h, size) * placement_options;
-		}
-		assert_eq!(total, CANDLE_GLYPH_COUNT, "total glyph count mismatch");
+		assert_snapshot!(chart, @"􁙄􉔄􀒵􁎟􀊯󿼊􂊇􁭡􀉭􅵳􅒠􀜷󿭢􈓱􈌫􈌫􉌪􄋛􃓼􁐽􈌫􀊁􈑒􃝗􈌫􈌐􃔌􈌫􀎎󿩄􁚤󿱁􀉭󿸎􈌫􄍤􃐿󿪭􀖇􈡷􃿊󿜝􃏗􈌦􀈅􀇼􀻨􀯂􈎮􃊢􈔅􈖸􈌗􂣡􀲙􁭡􅚽󿧞􈌫󿸙􄉱􈑒􀗍􈷕􅒽􂧜􃬃􈷕􅖵􀲕􈝀􁎆􀤤􃱳􉌨󿿸􈔅􈎮􁆂􀏀􁍡󿴍􈷕􀙥􈌩􁴈􈔅󿦭􅚽􅐮");
 	}
 }

@@ -2,7 +2,7 @@ pub mod candles;
 pub mod fill_levels;
 mod fontforge;
 
-pub use candles::{CANDLE_GLYPH_COUNT, CANDLE_PUA_START, CANDLE_SIZE, Candle, decode_candle, encode_candle, generate_candle_font};
+pub use candles::{CANDLE_GLYPH_COUNT, CANDLE_PUA_START, CANDLE_SIZE, Candle, SnapshotCandles, decode_candle, encode_candle, generate_candle_font};
 pub use fill_levels::{LEVELS, PUA_START, decode_bars, encode_bars, generate_font};
 
 /// Standard Unicode block characters for fallback mode (8 levels)

@@ -4,6 +4,12 @@ use std::{
 	process::{Command, Stdio},
 };
 
+// Font metric constants (matching DejaVu Sans Mono)
+pub const HHEA_ASCENT: i32 = 1901;
+pub const HHEA_DESCENT: i32 = 483;
+pub const LINE_HEIGHT: i32 = HHEA_ASCENT + HHEA_DESCENT; // 2384
+pub const GLYPH_WIDTH: i32 = 1233; // DejaVu Sans Mono width (1233 in 2048 em = 0.602 ratio)
+
 /// Common Python fontforge setup for DejaVu Sans Mono-compatible fonts
 pub const FONT_SETUP: &str = r#"
 import fontforge
