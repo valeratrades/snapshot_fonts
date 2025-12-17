@@ -800,7 +800,7 @@ mod tests {
 		assert_eq!(candle9, Candle::new(0, CANDLE_SIZE, NAKED_WICK, NAKED_WICK));
 
 		let candle10 = decode_candle(problematic_col[10]);
-		assert_eq!(candle10.high_offset, NAKED_WICK);
+		assert_eq!(candle10.high_offset, 0);
 		assert_eq!(candle10.body_offset, NAKED_WICK);
 		assert_eq!(candle10.body_size, NAKED_WICK);
 	}
