@@ -1,3 +1,10 @@
+
+> [!WARNING]
+> Uses Unicode Private Use Areas: \
+> - FillLevels: PUA-A (Plane 15) U+F0000U+FFFFD \
+> - Candles: PUA-B (Plane 16) U+100000U+10FFFD \
+>  \
+> These ranges may conflict with other custom fonts using PUA.
 # snapshot_fonts
 ![Minimum Supported Rust Version](https://img.shields.io/badge/nightly-1.93+-ab6000.svg)
 [<img alt="crates.io" src="https://img.shields.io/crates/v/snapshot_fonts.svg?color=fc8d62&logo=rust" height="20" style=flat-square>](https://crates.io/crates/snapshot_fonts)
@@ -7,6 +14,35 @@
 [<img alt="ci errors" src="https://img.shields.io/github/actions/workflow/status/valeratrades/snapshot_fonts/errors.yml?branch=master&style=for-the-badge&style=flat-square&label=errors&labelColor=420d09" height="20">](https://github.com/valeratrades/snapshot_fonts/actions?query=branch%3Amaster) <!--NB: Won't find it if repo is private-->
 [<img alt="ci warnings" src="https://img.shields.io/github/actions/workflow/status/valeratrades/snapshot_fonts/warnings.yml?branch=master&style=for-the-badge&style=flat-square&label=warnings&labelColor=d16002" height="20">](https://github.com/valeratrades/snapshot_fonts/actions?query=branch%3Amaster) <!--NB: Won't find it if repo is private-->
 
+Monospace fonts for terminal-based data visualization. Encode chart data directly in Unicode text.
+
+- **FillLevels**: 251×251 fill level combinations for sparklines/histograms
+- **Candles**: 52k candlestick glyphs for financial charts
+<!-- markdownlint-disable -->
+<details>
+<summary>
+<h3>Installation</h3>
+</summary>
+
+```sh
+cargo install snapshot_fonts
+snapshot_fonts generate -o ~/.local/share/fonts/
+fc-cache -fv
+```
+
+</details>
+<!-- markdownlint-restore -->
+
+## Usage
+```rust
+use snapshot_fonts::{SnapshotFillLevels, SnapshotCandles};
+
+// Price sparkline
+let chart = SnapshotFillLevels::from_prices(&prices).draw();
+
+// Candlestick chart
+let chart = SnapshotCandles::from_prices(&prices).draw();
+```
 
 
 

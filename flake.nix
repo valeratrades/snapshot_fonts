@@ -50,6 +50,7 @@
             snapshot_fonts_bin = rustPlatform.buildRustPackage rec {
               inherit pname;
               version = manifest.version;
+              doCheck = false;
 
               buildInputs = with pkgs; [
                 openssl.dev
@@ -63,12 +64,29 @@
           {
             inherit snapshot_fonts_bin;
 
-            default = pkgs.runCommand "fill-levels-font"
+            default = pkgs.runCommand "snapshot-fonts"
               {
                 nativeBuildInputs = [ snapshot_fonts_bin pkgs.fontforge ];
               } ''
               mkdir -p $out/share/fonts/truetype
               snapshot_fonts fill-levels --output $out/share/fonts/truetype/FillLevels.ttf
+              snapshot_fonts candles --output $out/share/fonts/truetype/Candles.ttf
+            '';
+
+            fill-levels = pkgs.runCommand "fill-levels-font"
+              {
+                nativeBuildInputs = [ snapshot_fonts_bin pkgs.fontforge ];
+              } ''
+              mkdir -p $out/share/fonts/truetype
+              snapshot_fonts fill-levels --output $out/share/fonts/truetype/FillLevels.ttf
+            '';
+
+            candles = pkgs.runCommand "candles-font"
+              {
+                nativeBuildInputs = [ snapshot_fonts_bin pkgs.fontforge ];
+              } ''
+              mkdir -p $out/share/fonts/truetype
+              snapshot_fonts candles --output $out/share/fonts/truetype/Candles.ttf
             '';
           };
 
