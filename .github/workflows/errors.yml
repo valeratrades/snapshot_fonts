@@ -30,7 +30,7 @@ jobs:
         name: modified-cargo-files
     - run: cargo update
     - run: cargo check
-    - run: cargo test -- --skip test_snapshot_plot_orders --skip test_snapshot_plot_p
+    - run: cargo test
     strategy:
       fail-fast: false
       matrix:

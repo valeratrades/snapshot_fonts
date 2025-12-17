@@ -27,7 +27,7 @@
         workflowContents = v-utils.ci {
           inherit pkgs;
           lastSupportedVersion = "nightly-2025-12-12";
-          jobsErrors = [{ name = "rust-tests"; args.skipPatterns = [ "test_snapshot_plot_orders" "test_snapshot_plot_p" ]; }];
+          jobsErrors = [ "rust-tests" ];
           jobsWarnings = [ "rust-doc" "rust-clippy" "rust-machete" "rust-sorted" "rust-sorted-derives" "tokei" ];
           jobsOther = [ "loc-badge" ];
         };
