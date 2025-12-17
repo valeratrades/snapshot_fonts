@@ -26,7 +26,7 @@ const WICK_RIGHT: i32 = 2 * GLYPH_WIDTH / 3;
 const BODY_LEFT: i32 = 0;
 const BODY_RIGHT: i32 = GLYPH_WIDTH;
 const LEVEL_HEIGHT: i32 = LINE_HEIGHT / CANDLE_SIZE as i32;
-const DOJI_HEIGHT: i32 = LINE_HEIGHT / 44;
+const DOJI_HEIGHT: i32 = LINE_HEIGHT / 32;
 
 /// A rectangle defined by its corners
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -414,11 +414,6 @@ impl SnapshotCandles {
 			let open_level = ((ohlc.open - min_price) / price_per_level).round() as usize;
 			let close_level = ((ohlc.close - min_price) / price_per_level).round() as usize;
 
-			//dbg
-			if i == 53 {
-				dbg!(&ohlc, high_level, low_level, open_level, close_level);
-			}
-
 			col_data.push((
 				high_level.min(total_levels - 1),
 				low_level.min(total_levels - 1),
@@ -685,7 +680,7 @@ pub fn generate_glyph_script() -> String {
 /// - Horizontal space split in 3: left wick area, body (middle 1/3), right wick area
 /// - Wick is drawn in the center third
 /// - Body is drawn wider, covering the full width
-/// - If body_size == 0 (doji), body is drawn as 1/44 of char height
+/// - If body_size == 0 (doji), body is drawn as 1/32 of char height
 ///
 /// Encoding order (matching Rust encode_candle):
 /// - Index 0: empty candle
@@ -794,11 +789,13 @@ mod tests {
 		assert_eq!(candle10.body_size, NAKED_WICK);
 	}
 
-	/// Test that multi-row candles are properly connected:
-	/// - Adjacent rows in the same column must be directly touching
-	/// - Candle above must have its bottom extend fully down
-	/// - Candle below must have its top extend fully up (high_offset = 0; body_offset = 0 or naked wick)
-	//TODO!!!!!!!!!!!!!!!: this test is WRONG. MUST be failing with current implementation. Fix the test to correctly detect candles not feeling cleanly.
+	/// Test that multi-row candles are properly connected at row boundaries.
+	///
+	/// For two adjacent rows (above and below) with candles in the same column:
+	/// - Above candle must extend to bottom of its cell: high_offset + height == CANDLE_SIZE
+	/// - Below candle must extend to top of its cell: high_offset == 0
+	///
+	/// This ensures continuous vertical joining without gaps.
 	#[test]
 	fn test_multirow_candle_continuity() {
 		let chart = test_chart();
@@ -809,61 +806,45 @@ mod tests {
 			return;
 		}
 
-		// Parse all rows into decoded candles, keeping original chars for debug
 		let decoded: Vec<Vec<(char, Candle)>> = rows.iter().map(|row| row.chars().map(|c| (c, decode_candle(c))).collect()).collect();
 
 		let width = decoded[0].len();
 		let mut errors: Vec<String> = Vec::new();
-		let mut adjacent_pairs = 0;
 
-		// Check each column
 		for col in 0..width {
-			// Check each pair of vertically adjacent rows
 			for row_above_idx in 0..(height - 1) {
 				let row_below_idx = row_above_idx + 1;
 				let (char_above, candle_above) = decoded[row_above_idx][col];
 				let (char_below, candle_below) = decoded[row_below_idx][col];
 
-				// Skip if either is empty
+				// Skip if either cell is empty - no continuity to check
 				if candle_above.is_empty() || candle_below.is_empty() {
 					continue;
 				}
 
-				adjacent_pairs += 1;
+				// Both cells have candles - verify they connect at the boundary
+				let above_touches_bottom = candle_above.high_offset + candle_above.height == CANDLE_SIZE;
+				let below_touches_top = candle_below.high_offset == 0;
 
-				// Both cells have candles - they MUST connect at the row boundary
-				// For connection: above candle must span full cell (touch bottom edge)
-				//                 below candle must span full cell (touch top edge)
-
-				let size = CANDLE_SIZE;
-				let above_bottom = candle_above.high_offset + candle_above.height;
-				let below_bottom = candle_below.high_offset + candle_below.height;
-
-				// Candle above must fill its cell completely to connect downward
-				if candle_above.high_offset != 0 || above_bottom != size {
+				if !above_touches_bottom {
 					errors.push(format!(
-						"Col {col}, row {row_above_idx}: above '{char_above}' p={} h={} doesn't fill cell (need p=0, p+h={})",
-						candle_above.high_offset, candle_above.height, size
+						"Col {col}, rows {row_above_idx}-{row_below_idx}: above candle '{char_above}' (p={}, h={}) doesn't reach bottom (p+h={}, need {})",
+						candle_above.high_offset,
+						candle_above.height,
+						candle_above.high_offset + candle_above.height,
+						CANDLE_SIZE
 					));
 				}
 
-				// Candle below must fill its cell completely to connect upward
-				if candle_below.high_offset != 0 || below_bottom != size {
+				if !below_touches_top {
 					errors.push(format!(
-						"Col {col}, row {row_below_idx}: below '{char_below}' p={} h={} doesn't fill cell (need p=0, p+h={})",
-						candle_below.high_offset, candle_below.height, size
+						"Col {col}, rows {row_above_idx}-{row_below_idx}: below candle '{char_below}' (p={}, h={}) doesn't start at top (p={}, need 0)",
+						candle_below.high_offset, candle_below.height, candle_below.high_offset
 					));
 				}
 			}
 		}
 
-		if !errors.is_empty() {
-			panic!(
-				"Multi-row candle continuity errors ({} errors in {} adjacent pairs):\n{}",
-				errors.len(),
-				adjacent_pairs,
-				errors.join("\n")
-			);
-		}
+		assert!(errors.is_empty(), "Multi-row candle continuity errors ({} errors):\n{}", errors.len(), errors.join("\n"));
 	}
 }
