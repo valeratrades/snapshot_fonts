@@ -44,15 +44,15 @@ let chart = SnapshotFillLevels::from_prices(&prices).draw();
 let chart = SnapshotCandles::from_prices(&prices).draw();
 ```
 
-# Unicode Ranges
-
-## FillLevels
+## Other
+### Unicode Ranges
+#### FillLevels
 - Start: U+F09E5
 - End: U+FFFFD
 - Count: 63,001 (251 × 251)
 - Plane: 15 (PUA-A)
 
-## Candles
+#### Candles
 - Start: U+100000
 - End: U+10CCD5
 - Count: 52,438
