@@ -813,6 +813,7 @@ mod tests {
 		let width = decoded[0].len();
 		let mut errors: Vec<String> = Vec::new();
 
+		#[allow(clippy::needless_range_loop)] //Q: should I make this global? Because eg here it makes logic more apparent (like O(n^2) nature)
 		for col in 0..width {
 			for row_above_idx in 0..(height - 1) {
 				let row_below_idx = row_above_idx + 1;
