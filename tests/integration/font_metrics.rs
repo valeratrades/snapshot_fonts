@@ -3,7 +3,7 @@
 
 use std::process::Command;
 
-use snapshot_fonts::generate_font;
+use snapshot_fonts::{PUA_START, generate_font};
 
 #[test]
 fn test_font_metrics_are_correct() {
@@ -23,7 +23,8 @@ fn test_font_metrics_are_correct() {
 from fontTools.ttLib import TTFont
 import sys
 
-tt = TTFont("{}")
+PUA_START = {pua_start}
+tt = TTFont("{path}")
 
 errors = []
 
@@ -41,7 +42,7 @@ if tt['hhea'].lineGap != 0:
 
 # Check full bar glyph fills the line height
 cmap = tt.getBestCmap()
-full_bar_code = 0xf0000 + 250*251 + 250
+full_bar_code = PUA_START + 250*251 + 250
 if full_bar_code in cmap:
     glyph_name = cmap[full_bar_code]
     glyf = tt['glyf']
@@ -58,7 +59,8 @@ if errors:
         print(e, file=sys.stderr)
     sys.exit(1)
 "#,
-		font_path.display()
+		pua_start = PUA_START,
+		path = font_path.display()
 	);
 
 	let output = Command::new("uv")
