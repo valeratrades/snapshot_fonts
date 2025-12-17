@@ -448,13 +448,10 @@ impl SnapshotCandles {
 				let extends_above = high > row_top;
 
 				// Wick bounds within this row (in row-local coordinates, 0 = row_bottom)
-				// For multi-row continuity: if candle extends in EITHER direction, fill entire cell
-				// This ensures seamless visual connection between adjacent rows
-				let fills_cell = extends_below || extends_above;
-
-				// We use "exclusive" bounds: low and high represent the number of levels from row_bottom
-				let local_low = if fills_cell { 0 } else { low - row_bottom };
-				let local_high = if fills_cell { levels_per_row } else { high - row_bottom + 1 };
+				// Extend to boundary only on the side that actually extends beyond
+				// We use "exclusive" bounds: local_high is one past the top level
+				let local_low = if extends_below { 0 } else { low - row_bottom };
+				let local_high = if extends_above { levels_per_row } else { high - row_bottom + 1 };
 
 				// Convert to new coordinate system where 0 = top of cell
 				// high_offset = offset from top of cell to wick top (HIGH point)
@@ -470,31 +467,23 @@ impl SnapshotCandles {
 				// Check if body intersects this row
 				let body_intersects = !(body_top_global < row_bottom || body_bottom_global > row_top);
 
-				// For fill rows (wick fills cell AND body doesn't intersect), body fills entire cell
-				// This creates visual continuity for candles spanning multiple rows
-				let is_fill_row = fills_cell && !body_intersects;
-
-				let candle = if is_fill_row {
-					// Fill row: body fills entire cell (body_offset=0, body_size=height)
-					Candle::new(high_offset as u8, height as u8, 0, height as i8)
-				} else if !body_intersects {
+				let candle = if !body_intersects {
 					// Body doesn't intersect this row - naked wick
 					Candle::naked_wick(high_offset as u8, height as u8)
 				} else {
 					// Body intersects - clamp to row boundaries
 					let body_extends_below = body_bottom_global < row_bottom;
 					let body_extends_above = body_top_global > row_top;
-					let body_fills_cell = body_extends_below || body_extends_above;
 
-					// Use same exclusive bounds convention as wick
-					let local_body_bottom = if body_fills_cell { 0 } else { body_bottom_global - row_bottom };
-					let local_body_top = if body_fills_cell { levels_per_row } else { body_top_global - row_bottom + 1 };
+					// Extend to boundary only on the side that actually extends beyond
+					let local_body_bottom = if body_extends_below { 0 } else { body_bottom_global - row_bottom };
+					let local_body_top = if body_extends_above { levels_per_row } else { body_top_global - row_bottom + 1 };
 
 					// body_offset = offset from high_offset to body top
 					// local_high is the exclusive top of wick, local_body_top is exclusive top of body
 					let bo = local_high - local_body_top;
-					// body_size = body span
-					let bsz = local_body_top - local_body_bottom;
+					// body_size = body span (0 for doji when open == close)
+					let bsz = if body_top_global == body_bottom_global { 0 } else { local_body_top - local_body_bottom };
 					Candle::new(high_offset as u8, height as u8, bo as i8, bsz as i8)
 				};
 				row_chars.push(encode_candle(candle));
@@ -729,18 +718,18 @@ mod tests {
 		let chart = test_chart();
 
 		assert_snapshot!(chart, @r"
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􈴒􈴒􈴒􈴒􀀀􉇣􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􀀀􈴒􈴒􈴒􈴒􈳜􈴒􉄧􁦨􈴒􈻤􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􀝷􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􈴒􀀀􀀀􀀀􀀀􈴒􈻈􀷟􆏷
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􄈡􁟞􈶋􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􁘃􀺜􈼘􀠒􈴒􀀀􈴒􈴒􈴒􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀶂􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􁡒􈴒􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀈞􁮤􀣱􉅏􌳕􀈞􌳕􀀀􀈩􌳔􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀒽􀒬􀀀􈴒􀄆􀄆􀁎􀗴􂕍􉄧􁦨􌳄􅾜􀁁􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􌳐􈴒􀯧􀝷􀀏􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􃲋􀀀􀀀􌳕􀀀􀀀􀀀􀀀􁮤􈻈􀷟􆏷
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀈱􄈡􁟊􃳤􀊯􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􁘃􀺍􀱬􀠒􀤎􀀀􀃕􅸚􌳁􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀣱􀶂􀯣􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀯬􁡒􀊦􀀀􀀀􀀀􀀀
 		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀽺􄑌􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􈳦􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􁀯􉃊􈴒􀀀􈸪􈴒􈴒􁜱􈴒􈴒􈴒􁀯􈴒􈴒􀀀􀀀􈴒􈴒􈴒􈴒􈴒􈴒􀀀􀀀􀀀􈴒􀞔􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􉆖􈴒􀀀􈴒􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􀀀􀀀􀀀􈴒􈴒􈴒􀀀􀀀􀀀􈴒􈽲􁡯􀍎􈴒􀀀􈴒􈴒􁗌􀀀􀀀􀀀􀀀􈴒􈺀􈴒􀀀􈴒􀀀􀀀􀀀􀀀􀀀􈴒􈴒􀀀􈴒􉇏􈴒􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􈴒􈴒􀷥􈴒􈴒􈴽􅼍􈴒􉄿􈴒􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􈴒􄂉􈴒􆒍􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈴄􈴒􈴒􈴒􀀀􈴒􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
-		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􈴒􈴒􈳑􆋛􈴒􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀈱􁯸􌳔􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􌳔􂰇􀤎􀀀􀀀􀀀􀀀􀀀􀀀􀃕􀽺􄑌􁭩􁂟􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􄈡􀊯􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀃕􁗌􀊦􀗸􂬚􀈩􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀒬􁀯􁀫􀁁􀀀􃵏􀄆􀊭􁜱􂬚􌳔􀈞􁀯􀥂􃲋􀀀􀀀􀄁􀗽􁫴􀃕􈴒􆈃􀀀􀀀􀀀􄎼􀞔􀯬􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀒨􀒙􀀀􀃚􀒙􌳕􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􌳔􅸚􀀀􀀀􀀀􁖾􀄆􈸹􀀀􀀀􀀀􁮤􁫫􁡡􀍎􀊭􀀀􌳁􁗇􁗌􀀀􀀀􀀀􀀀􅷿􁙨􀊭􀀀􀄁􀀀􀀀􀀀􀀀􀀀􀊭􀊯􀀀􅸚􀃐􀓈􁫴􀗻􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􌳃􂔹􀷥􀗽􀗸􂕬􅼍􁯸􀒗􌳕􀀀􀀀􀀀􀀀􀀀􈴒􀀀􀀀􀀀􀀀􀀀􀀀􅸕􄂉􀃕􆒍􃲋􌳅􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􌳋􀗯􀀏􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀏􌳃􅸑􁬫􀁁􌳔􀀀􄈡􀄄􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􁗃􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􌳁􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
+		􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀊯􀗽􀊡􆋛􂕍􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀
 		");
 	}
 
@@ -776,7 +765,7 @@ mod tests {
 		// low_level = 21
 		// open_level = 34
 		// close_level = 34
-		assert_snapshot!(problematic_col.iter().collect::<String>(), @"􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉇏􈴒􈴒􀀀"); // visual check; this succeeding means nothing, as we're yet to have a correct representation, that I would've then fixed here.
+		assert_snapshot!(problematic_col.iter().collect::<String>(), @"􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀃐􌳋􌳁􀀀"); // visual check; this succeeding means nothing, as we're yet to have a correct representation, that I would've then fixed here.
 		assert_snapshot!(decoded.join("\n"), @r"
 		row0:empty
 		row1:empty
@@ -786,9 +775,9 @@ mod tests {
 		row5:empty
 		row6:empty
 		row7:empty
-		row8:p=0,h=11,bo=9,bsz=1
-		row9:p=0,h=11,bo=0,bsz=11
-		row10:p=0,h=11,bo=0,bsz=11
+		row8:p=9,h=2,bo=0,bsz=0
+		row9:p=0,h=11,bo=-1,bsz=-1
+		row10:p=0,h=1,bo=-1,bsz=-1
 		row11:empty
 		"); // this succeeding means nothing too
 
