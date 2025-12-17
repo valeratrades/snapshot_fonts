@@ -202,41 +202,30 @@ fn generate_all_glyphs() -> Vec<CandleGlyph> {
 	glyphs
 }
 
-/// Candle representation using the encoding from calc_candles:
-/// - `high_offset`: 0-11, vertical position of candle within character cell (offset from top to wick high)
-/// - `height`: 0-11, internal candle height (wick span from high to low)
-/// - `body_offset`: offset from top of candle to body top (0 to height), or -1 for naked wick
-/// - `body_size`: size of body (0 = doji, drawn as thin line), or -1 for naked wick
+/// Single candlestick glyph within a character cell.
 ///
-/// When both `body_offset` and `body_size` are -1, the candle is a "naked wick" - just wick, no body.
-/// This is used when the body is entirely outside this character cell.
-/// Create a new candle with the specified geometry.
+/// When `body_offset` and `body_size` are both `NAKED_WICK` (-1), the candle has no body
+/// in this cell (used when the body is entirely in an adjacent cell).
 ///
-/// # Parameters
-/// - `high_offset`: Offset of the entire candle from the top of the char cell (0-11).
-///   This is where the wick starts (the HIGH point).
-/// - `height`: The total height of the candle (wick span from high to low).
-///   The candle extends from `high_offset` to `high_offset + height`.
-/// - `body_offset`: Offset from `high_offset` to the body top (0 to height), or NAKED_WICK (-1).
-///   If `body_offset == 0`, body starts at the same level as the wick top (no top wick).
-/// - `body_size`: Size of the body (0 = doji, drawn as thin line), or NAKED_WICK (-1).
-///   Body extends from `high_offset + body_offset` to `high_offset + body_offset + body_size`.
-///
-/// # Geometry (all offsets from top of char cell)
+/// # Geometry (offsets from top of char cell)
 /// - Wick top (HIGH): at `high_offset`
-/// - Top wick: from `high_offset` to `high_offset + body_offset` (length = body_offset)
+/// - Top wick: from `high_offset` to `high_offset + body_offset`
 /// - Body top: at `high_offset + body_offset`
 /// - Body bottom: at `high_offset + body_offset + body_size`
 /// - Bottom wick: from `high_offset + body_offset + body_size` to `high_offset + height`
 /// - Wick bottom (LOW): at `high_offset + height`
 ///
-/// The rendering approach: first draw wick from `high_offset` through `high_offset + height`,
-/// then overlap body on top, if any.
+/// Rendering: draw wick from `high_offset` through `high_offset + height`, then overlay body.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, derive_new::new)]
 pub struct Candle {
+	/// Offset from top of char cell to wick high (0-11).
 	pub high_offset: u8,
+	/// Total wick span from high to low (0-11). Candle extends to `high_offset + height`.
 	pub height: u8,
+	/// Offset from `high_offset` to body top (0 to height), or `NAKED_WICK` (-1).
+	/// When 0, body starts at the wick top (no top wick).
 	pub body_offset: i8,
+	/// Body size (0 = doji, drawn as thin line), or `NAKED_WICK` (-1).
 	pub body_size: i8,
 }
 
