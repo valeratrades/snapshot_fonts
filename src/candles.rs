@@ -7,12 +7,14 @@ pub const CANDLE_SIZE: u8 = 11;
 /// Number of naked wick glyphs:
 /// - high_offset=0, height=1..=11 (wick comes from above): 11 options
 /// - high_offset=1..=10, height fills to bottom (wick goes below): 10 options
+///
 /// Total: 21
 pub const NAKED_WICK_COUNT: u32 = 21;
 /// Total number of candle glyphs:
 /// - 1 empty
 /// - 52416 regular (with body)
 /// - 21 naked wick (wick only, connected to outside)
+///
 /// = 52438
 pub const CANDLE_GLYPH_COUNT: u32 = 52438;
 /// Start of candle font in PUA-B (Plane 16): U+100000–U+10FFFD

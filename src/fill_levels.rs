@@ -1,8 +1,8 @@
 use std::path::Path;
 
 pub const LEVELS: u16 = 251;
-/// Start of Private Use Area - Plane 15 (PUA-A)
-pub const PUA_START: u32 = 0xf0000;
+/// Start of fill_levels glyphs in PUA-A (Plane 15), positioned to end at U+FFFFD
+pub const PUA_START: u32 = 0xf09e5;
 
 /// Encode two bar values (0-250 each) into a Unicode codepoint in PUA-A (Plane 15)
 pub fn encode_bars(left: u8, right: u8) -> char {
