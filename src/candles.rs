@@ -17,6 +17,8 @@ pub const NAKED_WICK_COUNT: u32 = 21;
 pub const CANDLE_GLYPH_COUNT: u32 = 52438;
 /// Start of candle font in PUA-B (Plane 16): U+100000–U+10FFFD
 pub const CANDLE_PUA_START: u32 = 0x100000;
+/// Sentinel value indicating naked wick (no body in this cell)
+pub const NAKED_WICK: i8 = -1;
 
 // Derived constants for glyph geometry
 const WICK_LEFT: i32 = GLYPH_WIDTH / 3;
@@ -208,10 +210,29 @@ fn generate_all_glyphs() -> Vec<CandleGlyph> {
 ///
 /// When both `body_offset` and `body_size` are -1, the candle is a "naked wick" - just wick, no body.
 /// This is used when the body is entirely outside this character cell.
+/// Create a new candle with the specified geometry.
 ///
-/// For simplicity, we use the first wick configuration (wick_above=0, wick_below=0)
-/// in the basic encode/decode. Full wick support would need additional parameters.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// # Parameters
+/// - `high_offset`: Offset of the entire candle from the top of the char cell (0-11).
+///   This is where the wick starts (the HIGH point).
+/// - `height`: The total height of the candle (wick span from high to low).
+///   The candle extends from `high_offset` to `high_offset + height`.
+/// - `body_offset`: Offset from `high_offset` to the body top (0 to height), or NAKED_WICK (-1).
+///   If `body_offset == 0`, body starts at the same level as the wick top (no top wick).
+/// - `body_size`: Size of the body (0 = doji, drawn as thin line), or NAKED_WICK (-1).
+///   Body extends from `high_offset + body_offset` to `high_offset + body_offset + body_size`.
+///
+/// # Geometry (all offsets from top of char cell)
+/// - Wick top (HIGH): at `high_offset`
+/// - Top wick: from `high_offset` to `high_offset + body_offset` (length = body_offset)
+/// - Body top: at `high_offset + body_offset`
+/// - Body bottom: at `high_offset + body_offset + body_size`
+/// - Bottom wick: from `high_offset + body_offset + body_size` to `high_offset + height`
+/// - Wick bottom (LOW): at `high_offset + height`
+///
+/// The rendering approach: first draw wick from `high_offset` through `high_offset + height`,
+/// then overlap body on top, if any.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, derive_new::new)]
 pub struct Candle {
 	pub high_offset: u8,
 	pub height: u8,
@@ -219,41 +240,7 @@ pub struct Candle {
 	pub body_size: i8,
 }
 
-/// Sentinel value indicating naked wick (no body in this cell)
-pub const NAKED_WICK: i8 = -1;
-
 impl Candle {
-	/// Create a new candle with the specified geometry.
-	///
-	/// # Parameters
-	/// - `high_offset`: Offset of the entire candle from the top of the char cell (0-11).
-	///   This is where the wick starts (the HIGH point).
-	/// - `height`: The total height of the candle (wick span from high to low).
-	///   The candle extends from `high_offset` to `high_offset + height`.
-	/// - `body_offset`: Offset from `high_offset` to the body top (0 to height), or NAKED_WICK (-1).
-	///   If `body_offset == 0`, body starts at the same level as the wick top (no top wick).
-	/// - `body_size`: Size of the body (0 = doji, drawn as thin line), or NAKED_WICK (-1).
-	///   Body extends from `high_offset + body_offset` to `high_offset + body_offset + body_size`.
-	///
-	/// # Geometry (all offsets from top of char cell)
-	/// - Wick top (HIGH): at `high_offset`
-	/// - Top wick: from `high_offset` to `high_offset + body_offset` (length = body_offset)
-	/// - Body top: at `high_offset + body_offset`
-	/// - Body bottom: at `high_offset + body_offset + body_size`
-	/// - Bottom wick: from `high_offset + body_offset + body_size` to `high_offset + height`
-	/// - Wick bottom (LOW): at `high_offset + height`
-	///
-	/// The rendering approach: first draw wick from `high_offset` through `high_offset + height`,
-	/// then overlap body on top, if any.
-	pub fn new(high_offset: u8, height: u8, body_offset: i8, body_size: i8) -> Self {
-		Candle {
-			high_offset,
-			height,
-			body_offset,
-			body_size,
-		}
-	}
-
 	/// Create a naked wick candle (wick only, no body in this cell)
 	pub fn naked_wick(high_offset: u8, height: u8) -> Self {
 		Candle {
@@ -795,6 +782,12 @@ mod tests {
 			})
 			.collect();
 
+		// for ref, the translated candle has:
+		// high_level = 34
+		// low_level = 21
+		// open_level = 34
+		// close_level = 34
+		assert_snapshot!(problematic_col.iter().collect::<String>(), @"􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉇏􈴒􈴒􀀀"); // visual check; this succeeding means nothing, as we're yet to have a correct representation, that I would've then fixed here.
 		assert_snapshot!(decoded.join("\n"), @r"
 		row0:empty
 		row1:empty
@@ -808,19 +801,25 @@ mod tests {
 		row9:p=0,h=11,bo=0,bsz=11
 		row10:p=0,h=11,bo=0,bsz=11
 		row11:empty
-		");
-		assert_snapshot!(problematic_col.iter().collect::<String>(), @"􀀀􀀀􀀀􀀀􀀀􀀀􀀀􀀀􉇏􈴒􈴒􀀀");
+		"); // this succeeding means nothing too
 
 		let candle8 = decode_candle(problematic_col[8]);
+		assert_eq!(candle8.body_offset, 0);
+		assert_eq!(candle8.body_size, 0);
+
 		let candle9 = decode_candle(problematic_col[9]);
+		assert_eq!(candle9, Candle::new(0, CANDLE_SIZE, NAKED_WICK, NAKED_WICK));
+
 		let candle10 = decode_candle(problematic_col[10]);
-		assert_eq!(candle9.height, CANDLE_SIZE);
+		assert_eq!(candle10.high_offset, NAKED_WICK);
+		assert_eq!(candle10.body_offset, NAKED_WICK);
+		assert_eq!(candle10.body_size, NAKED_WICK);
 	}
 
 	/// Test that multi-row candles are properly connected:
 	/// - Adjacent rows in the same column must be directly touching
-	/// - Candle above must have its bottom extend fully down (high_offset = 0)
-	/// - Candle below must have its top extend fully up (high_offset + height = CANDLE_SIZE)
+	/// - Candle above must have its bottom extend fully down
+	/// - Candle below must have its top extend fully up (high_offset = 0; body_offset = 0 or naked wick)
 	//TODO!!!!!!!!!!!!!!!: this test is WRONG. MUST be failing with current implementation. Fix the test to correctly detect candles not feeling cleanly.
 	#[test]
 	fn test_multirow_candle_continuity() {
