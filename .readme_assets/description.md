@@ -4,15 +4,12 @@ Monospace fonts for terminal-based data visualization. Encode chart data directl
 - **Candles**: 52k candlestick glyphs for financial charts
 
 ## Standard vs Custom Font Resolution
+normally when trying to render series of meaningful values in snapshot tests (or terminal), you are limited to constructing them from just 8 bar chars (`' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'`), which is severely limiting.  
+I couldn't take it anymore, hence this project. Here is the side-by-side comparison of the default method (top) vs 2x255 per chart resolution with our custom font
 
-Standard terminal charts are limited to 9 block characters (`' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'`), resulting in coarse vertical resolution:
-
-![Standard 9-level block characters](fallback_vs_custom.png)
-
-With our custom font, we achieve much finer granularity - notice the smoother transitions and more detailed representation of the data.
+![Standard 9-level block characters](./levels.png)
 
 ## Candlestick Charts
+And here are the candlesticks (max precision I could fit into the available slots):
 
-Our implementation also supports candlestick charts for financial data visualization:
-
-![Candlestick chart format](candles.png)
+![Candlestick chart format](./candles.png)
