@@ -1,6 +1,6 @@
 [package]
 name = "snapshot_fonts"
-version = "1.2.1"
+version = "1.3.0"
 edition = "2024"
 description = "High-resolution terminal bar charts using custom PUA fonts (251 levels per half-character)"
 license = "BlueOak-1.0.0"
