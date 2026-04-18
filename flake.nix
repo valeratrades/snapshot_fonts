@@ -4,9 +4,9 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
     pre-commit-hooks.url = "github:cachix/git-hooks.nix";
-    v-utils.url = "github:valeratrades/.github/v1.2.1";
+    v_flakes.url = "github:valeratrades/v_flakes/v1.6";
   };
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v-utils }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v_flakes }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
@@ -19,26 +19,26 @@
         rust = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
           extensions = [ "rust-src" "rust-analyzer" "rust-docs" "rustc-codegen-cranelift-preview" ];
         });
-        pre-commit-check = pre-commit-hooks.lib.${system}.run (v-utils.files.preCommit { inherit pkgs; });
+        pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; });
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
-        github = v-utils.github {
-          inherit pkgs pname;
-          langs = [ "rs" ];
+        rs = v_flakes.rs { inherit pkgs rust; };
+        github = v_flakes.github {
+          inherit pkgs pname rs;
+          enable = true;
           lastSupportedVersion = "nightly-2025-12-12";
-          jobsErrors = [ "rust-tests" ];
-          jobsWarnings = [ "rust-doc" "rust-clippy" "rust-machete" "rust-sorted" "rust-sorted-derives" "tokei" ];
-          jobsOther = [ "loc-badge" ];
+          jobs = { default = true; };
         };
-        readme = v-utils.readme-fw {
+        readme = v_flakes.readme-fw {
           inherit pkgs pname;
           lastSupportedVersion = "nightly-1.93";
           rootDir = ./.;
-          licenses = [{ name = "Blue Oak 1.0.0"; outPath = "LICENSE"; }];
+          defaults = true;
           badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];
         };
+        combined = v_flakes.utils.combine [ rs github readme ];
       in
       {
         packages =
@@ -97,21 +97,9 @@
             inherit stdenv;
             shellHook =
               pre-commit-check.shellHook
-              + github.shellHook
+              + combined.shellHook
               + ''
-                cp -f ${v-utils.files.licenses.blue_oak} ./LICENSE
-
-                cp -f ${v-utils.files.treefmt { inherit pkgs; }} ./.treefmt.toml
-
-                mkdir -p ./.cargo
-                cp -f ${ (v-utils.files.gitattributes { inherit pkgs; }) } ./.gitattributes
-                cp -f ${(v-utils.files.rust.clippy { inherit pkgs; })} ./.cargo/.clippy.toml
-                cp -f ${(v-utils.files.rust.config { inherit pkgs; })} ./.cargo/config.toml
-                cp -f ${(v-utils.files.rust.rustfmt { inherit pkgs; })} ./.rustfmt.toml
-
-                cp -f ${readme} ./README.md
-
-                alias qr="./target/debug/${pname}"
+                cp -f ${v_flakes.files.treefmt { inherit pkgs; }} ./.treefmt.toml
               '';
 
             packages = [
@@ -121,7 +109,7 @@
               rust
               fontforge
               uv
-            ] ++ pre-commit-check.enabledPackages ++ github.enabledPackages;
+            ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
             env.RUST_BACKTRACE = 1;
             env.RUST_LIB_BACKTRACE = 0;

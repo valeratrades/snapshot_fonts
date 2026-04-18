@@ -23,16 +23,16 @@ Monospace fonts for terminal-based data visualization. Encode chart data directl
 normally when trying to render series of meaningful values in snapshot tests (or terminal), you are limited to constructing them from just 8 bar chars (`' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'`), which is severely limiting.  
 I couldn't take it anymore, hence this project. Here is the side-by-side comparison of the default method (top) vs 2x255 per chart resolution with our custom font
 
-![Standard 9-level block characters](./.readme_assets/levels.png)
+![Standard 9-level block characters](./docs/.readme_assets/levels.png)
 
 ### Candlestick Charts
 And here are the candlesticks (max precision I could fit into the available slots):
 
-![Candlestick chart format](./.readme_assets/candles.png)
+![Candlestick chart format](./docs/.readme_assets/candles.png)
 <!-- markdownlint-disable -->
 <details>
 <summary>
-<h3>Installation</h3>
+<h2>Installation</h2>
 </summary>
 
 ```sh
@@ -73,7 +73,7 @@ let chart = SnapshotCandles::from_prices(&prices).draw();
 <br>
 
 <sup>
-	This repository follows <a href="https://github.com/valeratrades/.github/tree/master/best_practices">my best practices</a> and <a href="https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md">Tiger Style</a> (except "proper capitalization for acronyms": (VsrState, not VSRState) and formatting).
+	This repository follows <a href="https://github.com/valeratrades/.github/tree/master/best_practices">my best practices</a> and <a href="https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md">Tiger Style</a> (except "proper capitalization for acronyms": (VsrState, not VSRState) and formatting). For project's architecture, see <a href="./docs/ARCHITECTURE.md">ARCHITECTURE.md</a>.
 </sup>
 
 #### License

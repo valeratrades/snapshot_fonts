@@ -30,6 +30,372 @@ const BODY_RIGHT: i32 = GLYPH_WIDTH;
 const LEVEL_HEIGHT: i32 = LINE_HEIGHT / CANDLE_SIZE as i32;
 const DOJI_HEIGHT: i32 = LINE_HEIGHT / 32;
 
+use v_utils::trades::Ohlc;
+
+const DEFAULT_WIDTH: usize = 90;
+const DEFAULT_HEIGHT: usize = 12;
+/// Single candlestick glyph within a character cell.
+///
+/// When `body_offset` and `body_size` are both `NAKED_WICK` (-1), the candle has no body
+/// in this cell (used when the body is entirely in an adjacent cell).
+///
+/// # Geometry (offsets from top of char cell)
+/// - Wick top (HIGH): at `high_offset`
+/// - Top wick: from `high_offset` to `high_offset + body_offset`
+/// - Body top: at `high_offset + body_offset`
+/// - Body bottom: at `high_offset + body_offset + body_size`
+/// - Bottom wick: from `high_offset + body_offset + body_size` to `high_offset + height`
+/// - Wick bottom (LOW): at `high_offset + height`
+///
+/// Rendering: draw wick from `high_offset` through `high_offset + height`, then overlay body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, derive_new::new)]
+pub struct Candle {
+	/// Offset from top of char cell to wick high (0-11).
+	pub high_offset: u8,
+	/// Total wick span from high to low (0-11). Candle extends to `high_offset + height`.
+	pub height: u8,
+	/// Offset from `high_offset` to body top (0 to height), or `NAKED_WICK` (-1).
+	/// When 0, body starts at the wick top (no top wick).
+	pub body_offset: i8,
+	/// Body size (0 = doji, drawn as thin line), or `NAKED_WICK` (-1).
+	pub body_size: i8,
+}
+impl Candle {
+	/// Create a naked wick candle (wick only, no body in this cell)
+	pub fn naked_wick(high_offset: u8, height: u8) -> Self {
+		Candle {
+			high_offset,
+			height,
+			body_offset: NAKED_WICK,
+			body_size: NAKED_WICK,
+		}
+	}
+
+	/// Create empty candle (codepoint 0 in candle range)
+	pub fn empty() -> Self {
+		Candle {
+			high_offset: 0,
+			height: 0,
+			body_offset: 0,
+			body_size: 0,
+		}
+	}
+
+	/// Check if this is the empty candle
+	pub fn is_empty(&self) -> bool {
+		// Empty candle is index 0, which is height=0, high_offset=0, body=0
+		self.height == 0 && self.high_offset == 0 && self.body_offset == 0 && self.body_size == 0
+	}
+
+	/// Check if this is a naked wick (wick only, no body)
+	pub fn is_naked_wick(&self) -> bool {
+		self.body_offset == NAKED_WICK && self.body_size == NAKED_WICK
+	}
+
+	/// Validate candle parameters and return error message if invalid
+	pub fn validate(&self) -> Result<(), String> {
+		let size = CANDLE_SIZE;
+
+		// Empty candle is always valid
+		if self.is_empty() {
+			return Ok(());
+		}
+
+		// Check high_offset bounds
+		if self.high_offset > size {
+			return Err(format!("high_offset {} out of range [0, {size}]", self.high_offset));
+		}
+
+		// Check height bounds
+		if self.height > size {
+			return Err(format!("height {} out of range [0, {size}]", self.height));
+		}
+
+		// Check that candle fits in cell
+		if self.high_offset + self.height > size {
+			return Err(format!(
+				"candle extends beyond cell: high_offset({}) + height({}) = {} > {size}",
+				self.high_offset,
+				self.height,
+				self.high_offset + self.height
+			));
+		}
+
+		// Naked wick validation: must connect to outside
+		// Either high_offset=0 (connects above) or high_offset+height=size (connects below)
+		if self.is_naked_wick() {
+			let connects_above = self.high_offset == 0;
+			let connects_below = self.high_offset + self.height == size;
+			if !connects_above && !connects_below {
+				return Err(format!(
+					"naked wick must connect to outside: high_offset={}, height={}, need high_offset=0 OR high_offset+height={size}",
+					self.high_offset, self.height
+				));
+			}
+			if self.height == 0 {
+				return Err("naked wick cannot have height=0".to_string());
+			}
+			return Ok(());
+		}
+
+		// Body parameter validation (non-naked wick)
+		if self.body_offset < 0 || self.body_offset > self.height as i8 {
+			return Err(format!("body_offset {} out of range [0, height={}]", self.body_offset, self.height));
+		}
+
+		if self.body_size < 0 {
+			return Err(format!("body_size {} cannot be negative (use NAKED_WICK for both body params)", self.body_size));
+		}
+
+		if self.body_offset + self.body_size > self.height as i8 {
+			return Err(format!(
+				"body extends beyond wick: body_offset({}) + body_size({}) = {} > height({})",
+				self.body_offset,
+				self.body_size,
+				self.body_offset + self.body_size,
+				self.height
+			));
+		}
+
+		Ok(())
+	}
+}
+
+/// Candlestick chart snapshot
+#[derive(bon::Builder, Clone, Debug)]
+pub struct SnapshotCandles {
+	ohlcs: Vec<Ohlc>,
+	#[builder(default = DEFAULT_WIDTH)]
+	width: usize,
+	#[builder(default = DEFAULT_HEIGHT)]
+	height: usize,
+}
+impl SnapshotCandles {
+	/// Create from price series - step size is calculated from width
+	pub fn from_prices<T: Into<f64> + Copy>(prices: &[T]) -> Self {
+		let prices: Vec<f64> = prices.iter().map(|p| (*p).into()).collect();
+		let step = (prices.len() / DEFAULT_WIDTH).max(1);
+		let ohlcs = v_utils::trades::mock_p_to_ohlc(&prices, step);
+		Self::builder().ohlcs(ohlcs).build()
+	}
+
+	/// Render the candlestick chart
+	/// Multiple rows give more vertical precision - each row covers (CANDLE_SIZE+1) levels
+	pub fn draw(&self) -> String {
+		let empty = encode_candle(Candle::empty());
+		if self.ohlcs.is_empty() {
+			return (0..self.height).map(|_| empty.to_string().repeat(self.width)).collect::<Vec<_>>().join("\n");
+		}
+
+		// Find price range from wick extremes
+		let min_price = self.ohlcs.iter().map(|o| o.low).fold(f64::INFINITY, f64::min);
+		let max_price = self.ohlcs.iter().map(|o| o.high).fold(f64::NEG_INFINITY, f64::max);
+
+		if (max_price - min_price).abs() < f64::EPSILON {
+			let mid_candle = Candle::new(CANDLE_SIZE / 2, 0, 0, 0);
+			let mid = encode_candle(mid_candle);
+			return (0..self.height).map(|_| mid.to_string().repeat(self.width)).collect::<Vec<_>>().join("\n");
+		}
+
+		// Total levels = height rows * 11 levels per row
+		let levels_per_row = CANDLE_SIZE as usize;
+		let total_levels = self.height * levels_per_row;
+		let price_per_level = (max_price - min_price) / (total_levels - 1) as f64;
+
+		// For each column, compute the OHLC levels
+		let mut col_data: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(self.width);
+		for i in 0..self.width {
+			let ohlc_idx = (i * self.ohlcs.len()) / self.width;
+			let ohlc = &self.ohlcs[ohlc_idx.min(self.ohlcs.len() - 1)];
+
+			let high_level = ((ohlc.high - min_price) / price_per_level).round() as usize;
+			let low_level = ((ohlc.low - min_price) / price_per_level).round() as usize;
+			let open_level = ((ohlc.open - min_price) / price_per_level).round() as usize;
+			let close_level = ((ohlc.close - min_price) / price_per_level).round() as usize;
+
+			col_data.push((
+				high_level.min(total_levels - 1),
+				low_level.min(total_levels - 1),
+				open_level.min(total_levels - 1),
+				close_level.min(total_levels - 1),
+			));
+		}
+
+		// Build rows from top to bottom
+		// Note: levels increase upward (0 = min price, total_levels-1 = max price)
+		// But placement is offset from TOP of cell (0 = top of cell)
+		let mut rows: Vec<String> = Vec::with_capacity(self.height);
+		for row in (0..self.height).rev() {
+			let row_bottom = row * levels_per_row;
+			let row_top = row_bottom + levels_per_row - 1;
+
+			let mut row_chars: Vec<char> = Vec::with_capacity(self.width);
+			for &(high, low, open, close) in &col_data {
+				// Does this candle's wick intersect this row?
+				if high < row_bottom || low > row_top {
+					row_chars.push(empty);
+					continue;
+				}
+
+				// Determine if candle extends beyond this row
+				let extends_below = low < row_bottom;
+				let extends_above = high > row_top;
+
+				// Wick bounds within this row (in row-local coordinates, 0 = row_bottom)
+				// Extend to boundary only on the side that actually extends beyond
+				// We use "exclusive" bounds: local_high is one past the top level
+				let local_low = if extends_below { 0 } else { low - row_bottom };
+				let local_high = if extends_above { levels_per_row } else { high - row_bottom + 1 };
+
+				// Convert to new coordinate system where 0 = top of cell
+				// high_offset = offset from top of cell to wick top (HIGH point)
+				let high_offset = levels_per_row - local_high;
+
+				// height = wick span (from high to low)
+				let height = local_high - local_low;
+
+				// Body bounds (in global levels)
+				let body_top_global = open.max(close);
+				let body_bottom_global = open.min(close);
+
+				// Check if body intersects this row
+				let body_intersects = !(body_top_global < row_bottom || body_bottom_global > row_top);
+
+				let candle = if !body_intersects {
+					// Body doesn't intersect this row - naked wick
+					Candle::naked_wick(high_offset as u8, height as u8)
+				} else {
+					// Body intersects - clamp to row boundaries
+					let body_extends_below = body_bottom_global < row_bottom;
+					let body_extends_above = body_top_global > row_top;
+
+					// Extend to boundary only on the side that actually extends beyond
+					let local_body_bottom = if body_extends_below { 0 } else { body_bottom_global - row_bottom };
+					let local_body_top = if body_extends_above { levels_per_row } else { body_top_global - row_bottom + 1 };
+
+					// body_offset = offset from high_offset to body top
+					// local_high is the exclusive top of wick, local_body_top is exclusive top of body
+					let bo = local_high - local_body_top;
+					// body_size = body span (0 for doji when open == close)
+					let bsz = if body_top_global == body_bottom_global { 0 } else { local_body_top - local_body_bottom };
+					Candle::new(high_offset as u8, height as u8, bo as i8, bsz as i8)
+				};
+				row_chars.push(encode_candle(candle));
+			}
+			rows.push(row_chars.iter().collect());
+		}
+
+		rows.join("\n")
+	}
+}
+
+/// Decode a Unicode codepoint back to a Candle
+pub fn decode_candle(c: char) -> Candle {
+	let index = c as u32 - CANDLE_PUA_START;
+
+	// Index 0 is empty
+	if index == 0 {
+		return Candle::empty();
+	}
+
+	let size = CANDLE_SIZE as u32;
+	let regular_count = 52416u32;
+
+	// Check if this is a naked wick glyph (after regular glyphs)
+	if index > regular_count {
+		let remaining = index - 1 - regular_count;
+
+		// Naked wick layout:
+		// - First 11 (indices 0-10): high_offset=0, height=1..=11
+		// - Next 10 (indices 11-20): high_offset=1..=10, height fills to bottom
+		if remaining < 11 {
+			// high_offset=0 case
+			let height = remaining + 1;
+			return Candle::naked_wick(0, height as u8);
+		} else {
+			// high_offset>0 case
+			let high_offset = remaining - 11 + 1;
+			let height = size - high_offset; // fills to bottom
+			return Candle::naked_wick(high_offset as u8, height as u8);
+		}
+	}
+
+	// Regular candle decoding
+	let mut remaining = index - 1; // Subtract 1 for empty
+	let high_offset_options = size + 1;
+
+	// Find height
+	let mut height: u32 = 0;
+	while height <= size {
+		let count = candle_count_for_height(height, size) * high_offset_options;
+		if remaining < count {
+			break;
+		}
+		remaining -= count;
+		height += 1;
+	}
+
+	if height > size {
+		return Candle::empty();
+	}
+
+	// Find high_offset within this height
+	let count_per_high_offset = candle_count_for_height(height, size);
+	let high_offset = remaining / count_per_high_offset;
+	remaining %= count_per_high_offset;
+
+	// Find body_offset and body_size
+	let n_borders = height + 1;
+	let mut body_offset: u32 = 0;
+	while body_offset < n_borders {
+		let mut count_for_bs: u32 = 0;
+		for bsz in 0..(n_borders - body_offset) {
+			count_for_bs += wick_options(body_offset, bsz, n_borders);
+		}
+		if remaining < count_for_bs {
+			break;
+		}
+		remaining -= count_for_bs;
+		body_offset += 1;
+	}
+
+	let mut body_size: u32 = 0;
+	while body_offset + body_size < n_borders {
+		let count = wick_options(body_offset, body_size, n_borders);
+		if remaining < count {
+			break;
+		}
+		remaining -= count;
+		body_size += 1;
+	}
+
+	Candle::new(high_offset as u8, height as u8, body_offset as i8, body_size as i8)
+}
+/// Generate the glyph script with all geometry precomputed in Rust
+pub fn generate_glyph_script() -> String {
+	let glyphs = generate_all_glyphs();
+	glyphs.iter().map(|g| g.as_python()).collect::<Vec<_>>().join("\n")
+}
+/// Generate the Candles TTF font file
+/// Each glyph represents a candlestick with:
+/// - Horizontal space split in 3: left wick area, body (middle 1/3), right wick area
+/// - Wick is drawn in the center third
+/// - Body is drawn wider, covering the full width
+/// - If body_size == 0 (doji), body is drawn as 1/32 of char height
+///
+/// Encoding order (matching Rust encode_candle):
+/// - Index 0: empty candle
+/// - For each height h (0..=SIZE):
+///   - For each placement p (0..=SIZE):
+///     - For each body_start (0..=h):
+///       - For each body_size (0..=(h-body_start)):
+///         - For each wick_above (0..body_start):
+///           - For each wick_below (0..=(h-body_start-body_size)):
+///             - One glyph
+pub fn generate_candle_font(output: &Path) -> std::io::Result<()> {
+	let glyph_script = generate_glyph_script();
+	crate::fontforge::generate_font("Candles", output, &glyph_script)
+}
 /// A rectangle defined by its corners
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Rect {
@@ -56,7 +422,7 @@ struct CandleGlyph {
 impl CandleGlyph {
 	fn as_python(&self) -> String {
 		let mut lines = Vec::new();
-		lines.push(format!("g=font.createChar({});g.width={}", self.char_code, GLYPH_WIDTH));
+		lines.push(format!("g=font.createChar({});g.width={GLYPH_WIDTH}", self.char_code));
 
 		if self.wick.is_some() || self.body.is_some() {
 			lines.push("p=g.glyphPen()".to_string());
@@ -204,300 +570,16 @@ fn generate_all_glyphs() -> Vec<CandleGlyph> {
 	glyphs
 }
 
-/// Single candlestick glyph within a character cell.
-///
-/// When `body_offset` and `body_size` are both `NAKED_WICK` (-1), the candle has no body
-/// in this cell (used when the body is entirely in an adjacent cell).
-///
-/// # Geometry (offsets from top of char cell)
-/// - Wick top (HIGH): at `high_offset`
-/// - Top wick: from `high_offset` to `high_offset + body_offset`
-/// - Body top: at `high_offset + body_offset`
-/// - Body bottom: at `high_offset + body_offset + body_size`
-/// - Bottom wick: from `high_offset + body_offset + body_size` to `high_offset + height`
-/// - Wick bottom (LOW): at `high_offset + height`
-///
-/// Rendering: draw wick from `high_offset` through `high_offset + height`, then overlay body.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, derive_new::new)]
-pub struct Candle {
-	/// Offset from top of char cell to wick high (0-11).
-	pub high_offset: u8,
-	/// Total wick span from high to low (0-11). Candle extends to `high_offset + height`.
-	pub height: u8,
-	/// Offset from `high_offset` to body top (0 to height), or `NAKED_WICK` (-1).
-	/// When 0, body starts at the wick top (no top wick).
-	pub body_offset: i8,
-	/// Body size (0 = doji, drawn as thin line), or `NAKED_WICK` (-1).
-	pub body_size: i8,
-}
-
-impl Candle {
-	/// Create a naked wick candle (wick only, no body in this cell)
-	pub fn naked_wick(high_offset: u8, height: u8) -> Self {
-		Candle {
-			high_offset,
-			height,
-			body_offset: NAKED_WICK,
-			body_size: NAKED_WICK,
-		}
-	}
-
-	/// Create empty candle (codepoint 0 in candle range)
-	pub fn empty() -> Self {
-		Candle {
-			high_offset: 0,
-			height: 0,
-			body_offset: 0,
-			body_size: 0,
-		}
-	}
-
-	/// Check if this is the empty candle
-	pub fn is_empty(&self) -> bool {
-		// Empty candle is index 0, which is height=0, high_offset=0, body=0
-		self.height == 0 && self.high_offset == 0 && self.body_offset == 0 && self.body_size == 0
-	}
-
-	/// Check if this is a naked wick (wick only, no body)
-	pub fn is_naked_wick(&self) -> bool {
-		self.body_offset == NAKED_WICK && self.body_size == NAKED_WICK
-	}
-
-	/// Validate candle parameters and return error message if invalid
-	pub fn validate(&self) -> Result<(), String> {
-		let size = CANDLE_SIZE;
-
-		// Empty candle is always valid
-		if self.is_empty() {
-			return Ok(());
-		}
-
-		// Check high_offset bounds
-		if self.high_offset > size {
-			return Err(format!("high_offset {} out of range [0, {}]", self.high_offset, size));
-		}
-
-		// Check height bounds
-		if self.height > size {
-			return Err(format!("height {} out of range [0, {}]", self.height, size));
-		}
-
-		// Check that candle fits in cell
-		if self.high_offset + self.height > size {
-			return Err(format!(
-				"candle extends beyond cell: high_offset({}) + height({}) = {} > {}",
-				self.high_offset,
-				self.height,
-				self.high_offset + self.height,
-				size
-			));
-		}
-
-		// Naked wick validation: must connect to outside
-		// Either high_offset=0 (connects above) or high_offset+height=size (connects below)
-		if self.is_naked_wick() {
-			let connects_above = self.high_offset == 0;
-			let connects_below = self.high_offset + self.height == size;
-			if !connects_above && !connects_below {
-				return Err(format!(
-					"naked wick must connect to outside: high_offset={}, height={}, need high_offset=0 OR high_offset+height={}",
-					self.high_offset, self.height, size
-				));
-			}
-			if self.height == 0 {
-				return Err("naked wick cannot have height=0".to_string());
-			}
-			return Ok(());
-		}
-
-		// Body parameter validation (non-naked wick)
-		if self.body_offset < 0 || self.body_offset > self.height as i8 {
-			return Err(format!("body_offset {} out of range [0, height={}]", self.body_offset, self.height));
-		}
-
-		if self.body_size < 0 {
-			return Err(format!("body_size {} cannot be negative (use NAKED_WICK for both body params)", self.body_size));
-		}
-
-		if self.body_offset + self.body_size > self.height as i8 {
-			return Err(format!(
-				"body extends beyond wick: body_offset({}) + body_size({}) = {} > height({})",
-				self.body_offset,
-				self.body_size,
-				self.body_offset + self.body_size,
-				self.height
-			));
-		}
-
-		Ok(())
-	}
-}
-
 // ============================================================================
 // Chart rendering
 // ============================================================================
-
-use v_utils::trades::Ohlc;
-
-const DEFAULT_WIDTH: usize = 90;
-const DEFAULT_HEIGHT: usize = 12;
-
-/// Builder for candlestick chart snapshots
-#[derive(Clone, Debug)]
-pub struct SnapshotCandles {
-	ohlcs: Vec<Ohlc>,
-	width: usize,
-	height: usize,
-}
-
-impl SnapshotCandles {
-	/// Create from OHLC data
-	pub fn from_ohlc(ohlcs: &[Ohlc]) -> Self {
-		Self {
-			ohlcs: ohlcs.to_vec(),
-			width: DEFAULT_WIDTH,
-			height: DEFAULT_HEIGHT,
-		}
-	}
-
-	/// Create from price series - step size is calculated from width
-	pub fn from_prices<T: Into<f64> + Copy>(prices: &[T]) -> Self {
-		let prices: Vec<f64> = prices.iter().map(|p| (*p).into()).collect();
-		let step = (prices.len() / DEFAULT_WIDTH).max(1);
-		let ohlcs = v_utils::trades::mock_p_to_ohlc(&prices, step);
-		Self {
-			ohlcs,
-			width: DEFAULT_WIDTH,
-			height: DEFAULT_HEIGHT,
-		}
-	}
-
-	pub fn width(mut self, width: usize) -> Self {
-		self.width = width;
-		self
-	}
-
-	pub fn height(mut self, height: usize) -> Self {
-		self.height = height;
-		self
-	}
-
-	/// Render the candlestick chart
-	/// Multiple rows give more vertical precision - each row covers (CANDLE_SIZE+1) levels
-	pub fn draw(&self) -> String {
-		let empty = encode_candle(Candle::empty());
-		if self.ohlcs.is_empty() {
-			return (0..self.height).map(|_| empty.to_string().repeat(self.width)).collect::<Vec<_>>().join("\n");
-		}
-
-		// Find price range from wick extremes
-		let min_price = self.ohlcs.iter().map(|o| o.low).fold(f64::INFINITY, f64::min);
-		let max_price = self.ohlcs.iter().map(|o| o.high).fold(f64::NEG_INFINITY, f64::max);
-
-		if (max_price - min_price).abs() < f64::EPSILON {
-			let mid_candle = Candle::new(CANDLE_SIZE / 2, 0, 0, 0);
-			let mid = encode_candle(mid_candle);
-			return (0..self.height).map(|_| mid.to_string().repeat(self.width)).collect::<Vec<_>>().join("\n");
-		}
-
-		// Total levels = height rows * 11 levels per row
-		let levels_per_row = CANDLE_SIZE as usize;
-		let total_levels = self.height * levels_per_row;
-		let price_per_level = (max_price - min_price) / (total_levels - 1) as f64;
-
-		// For each column, compute the OHLC levels
-		let mut col_data: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(self.width);
-		for i in 0..self.width {
-			let ohlc_idx = (i * self.ohlcs.len()) / self.width;
-			let ohlc = &self.ohlcs[ohlc_idx.min(self.ohlcs.len() - 1)];
-
-			let high_level = ((ohlc.high - min_price) / price_per_level).round() as usize;
-			let low_level = ((ohlc.low - min_price) / price_per_level).round() as usize;
-			let open_level = ((ohlc.open - min_price) / price_per_level).round() as usize;
-			let close_level = ((ohlc.close - min_price) / price_per_level).round() as usize;
-
-			col_data.push((
-				high_level.min(total_levels - 1),
-				low_level.min(total_levels - 1),
-				open_level.min(total_levels - 1),
-				close_level.min(total_levels - 1),
-			));
-		}
-
-		// Build rows from top to bottom
-		// Note: levels increase upward (0 = min price, total_levels-1 = max price)
-		// But placement is offset from TOP of cell (0 = top of cell)
-		let mut rows: Vec<String> = Vec::with_capacity(self.height);
-		for row in (0..self.height).rev() {
-			let row_bottom = row * levels_per_row;
-			let row_top = row_bottom + levels_per_row - 1;
-
-			let mut row_chars: Vec<char> = Vec::with_capacity(self.width);
-			for &(high, low, open, close) in &col_data {
-				// Does this candle's wick intersect this row?
-				if high < row_bottom || low > row_top {
-					row_chars.push(empty);
-					continue;
-				}
-
-				// Determine if candle extends beyond this row
-				let extends_below = low < row_bottom;
-				let extends_above = high > row_top;
-
-				// Wick bounds within this row (in row-local coordinates, 0 = row_bottom)
-				// Extend to boundary only on the side that actually extends beyond
-				// We use "exclusive" bounds: local_high is one past the top level
-				let local_low = if extends_below { 0 } else { low - row_bottom };
-				let local_high = if extends_above { levels_per_row } else { high - row_bottom + 1 };
-
-				// Convert to new coordinate system where 0 = top of cell
-				// high_offset = offset from top of cell to wick top (HIGH point)
-				let high_offset = levels_per_row - local_high;
-
-				// height = wick span (from high to low)
-				let height = local_high - local_low;
-
-				// Body bounds (in global levels)
-				let body_top_global = open.max(close);
-				let body_bottom_global = open.min(close);
-
-				// Check if body intersects this row
-				let body_intersects = !(body_top_global < row_bottom || body_bottom_global > row_top);
-
-				let candle = if !body_intersects {
-					// Body doesn't intersect this row - naked wick
-					Candle::naked_wick(high_offset as u8, height as u8)
-				} else {
-					// Body intersects - clamp to row boundaries
-					let body_extends_below = body_bottom_global < row_bottom;
-					let body_extends_above = body_top_global > row_top;
-
-					// Extend to boundary only on the side that actually extends beyond
-					let local_body_bottom = if body_extends_below { 0 } else { body_bottom_global - row_bottom };
-					let local_body_top = if body_extends_above { levels_per_row } else { body_top_global - row_bottom + 1 };
-
-					// body_offset = offset from high_offset to body top
-					// local_high is the exclusive top of wick, local_body_top is exclusive top of body
-					let bo = local_high - local_body_top;
-					// body_size = body span (0 for doji when open == close)
-					let bsz = if body_top_global == body_bottom_global { 0 } else { local_body_top - local_body_bottom };
-					Candle::new(high_offset as u8, height as u8, bo as i8, bsz as i8)
-				};
-				row_chars.push(encode_candle(candle));
-			}
-			rows.push(row_chars.iter().collect());
-		}
-
-		rows.join("\n")
-	}
-}
 
 /// Encode a candle into a Unicode codepoint in PUA
 /// Layout:
 /// - Index 0: empty candle
 /// - Indices 1..52417: regular candles (with body)
 /// - Indices 52417..52483: naked wick candles (no body)
-pub fn encode_candle(candle: Candle) -> char {
+pub(crate) fn encode_candle(candle: Candle) -> char {
 	// Validate before encoding
 	if let Err(e) = candle.validate() {
 		panic!("Invalid candle: {e}");
@@ -567,89 +649,6 @@ pub fn encode_candle(candle: Candle) -> char {
 	char::from_u32(code).expect("valid codepoint")
 }
 
-/// Decode a Unicode codepoint back to a Candle
-pub fn decode_candle(c: char) -> Candle {
-	let index = c as u32 - CANDLE_PUA_START;
-
-	// Index 0 is empty
-	if index == 0 {
-		return Candle::empty();
-	}
-
-	let size = CANDLE_SIZE as u32;
-	let regular_count = 52416u32;
-
-	// Check if this is a naked wick glyph (after regular glyphs)
-	if index > regular_count {
-		let remaining = index - 1 - regular_count;
-
-		// Naked wick layout:
-		// - First 11 (indices 0-10): high_offset=0, height=1..=11
-		// - Next 10 (indices 11-20): high_offset=1..=10, height fills to bottom
-		if remaining < 11 {
-			// high_offset=0 case
-			let height = remaining + 1;
-			return Candle::naked_wick(0, height as u8);
-		} else {
-			// high_offset>0 case
-			let high_offset = remaining - 11 + 1;
-			let height = size - high_offset; // fills to bottom
-			return Candle::naked_wick(high_offset as u8, height as u8);
-		}
-	}
-
-	// Regular candle decoding
-	let mut remaining = index - 1; // Subtract 1 for empty
-	let high_offset_options = size + 1;
-
-	// Find height
-	let mut height: u32 = 0;
-	while height <= size {
-		let count = candle_count_for_height(height, size) * high_offset_options;
-		if remaining < count {
-			break;
-		}
-		remaining -= count;
-		height += 1;
-	}
-
-	if height > size {
-		return Candle::empty();
-	}
-
-	// Find high_offset within this height
-	let count_per_high_offset = candle_count_for_height(height, size);
-	let high_offset = remaining / count_per_high_offset;
-	remaining %= count_per_high_offset;
-
-	// Find body_offset and body_size
-	let n_borders = height + 1;
-	let mut body_offset: u32 = 0;
-	while body_offset < n_borders {
-		let mut count_for_bs: u32 = 0;
-		for bsz in 0..(n_borders - body_offset) {
-			count_for_bs += wick_options(body_offset, bsz, n_borders);
-		}
-		if remaining < count_for_bs {
-			break;
-		}
-		remaining -= count_for_bs;
-		body_offset += 1;
-	}
-
-	let mut body_size: u32 = 0;
-	while body_offset + body_size < n_borders {
-		let count = wick_options(body_offset, body_size, n_borders);
-		if remaining < count {
-			break;
-		}
-		remaining -= count;
-		body_size += 1;
-	}
-
-	Candle::new(high_offset as u8, height as u8, body_offset as i8, body_size as i8)
-}
-
 /// Count candle body/wick configurations for a given height (not including placement)
 fn candle_count_for_height(height: u32, _size: u32) -> u32 {
 	let n_borders = height + 1;
@@ -669,33 +668,6 @@ fn wick_options(open_offset_i: u32, close_from_open_j: u32, n_borders: u32) -> u
 	let options_wick_above = 1 + open_offset_i;
 	let options_wick_below = n_borders - (open_offset_i + close_from_open_j);
 	options_wick_above * options_wick_below
-}
-
-/// Generate the glyph script with all geometry precomputed in Rust
-pub fn generate_glyph_script() -> String {
-	let glyphs = generate_all_glyphs();
-	glyphs.iter().map(|g| g.as_python()).collect::<Vec<_>>().join("\n")
-}
-
-/// Generate the Candles TTF font file
-/// Each glyph represents a candlestick with:
-/// - Horizontal space split in 3: left wick area, body (middle 1/3), right wick area
-/// - Wick is drawn in the center third
-/// - Body is drawn wider, covering the full width
-/// - If body_size == 0 (doji), body is drawn as 1/32 of char height
-///
-/// Encoding order (matching Rust encode_candle):
-/// - Index 0: empty candle
-/// - For each height h (0..=SIZE):
-///   - For each placement p (0..=SIZE):
-///     - For each body_start (0..=h):
-///       - For each body_size (0..=(h-body_start)):
-///         - For each wick_above (0..body_start):
-///           - For each wick_below (0..=(h-body_start-body_size)):
-///             - One glyph
-pub fn generate_candle_font(output: &Path) -> std::io::Result<()> {
-	let glyph_script = generate_glyph_script();
-	crate::fontforge::generate_font("Candles", output, &glyph_script)
 }
 
 #[cfg(test)]
@@ -831,11 +803,10 @@ mod tests {
 
 				if !above_touches_bottom {
 					errors.push(format!(
-						"Col {col}, rows {row_above_idx}-{row_below_idx}: above candle '{char_above}' (p={}, h={}) doesn't reach bottom (p+h={}, need {})",
+						"Col {col}, rows {row_above_idx}-{row_below_idx}: above candle '{char_above}' (p={}, h={}) doesn't reach bottom (p+h={}, need {CANDLE_SIZE})",
 						candle_above.high_offset,
 						candle_above.height,
-						candle_above.high_offset + candle_above.height,
-						CANDLE_SIZE
+						candle_above.high_offset + candle_above.height
 					));
 				}
 

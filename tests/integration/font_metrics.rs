@@ -70,6 +70,6 @@ if errors:
 
 	if !output.status.success() {
 		let stderr = String::from_utf8_lossy(&output.stderr);
-		panic!("Font metrics verification failed:\n{}", stderr);
+		panic!("Font metrics verification failed:\n{stderr}");
 	}
 }

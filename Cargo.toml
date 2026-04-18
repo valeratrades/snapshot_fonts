@@ -12,6 +12,7 @@ categories = ["command-line-utilities", "visualization"]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
 [dependencies]
+bon = "3.9.0"
 clap = { version = "^4", features = ["derive"] }
 color-eyre = "^0.6.3"
 derive-new = "0.7.0"

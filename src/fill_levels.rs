@@ -4,15 +4,6 @@ pub const LEVELS: u16 = 251;
 /// Start of fill_levels glyphs in PUA-A (Plane 15), positioned to end at U+FFFFD
 pub const PUA_START: u32 = 0xf09e5;
 
-/// Encode two bar values (0-250 each) into a Unicode codepoint in PUA-A (Plane 15)
-pub fn encode_bars(left: u8, right: u8) -> char {
-	debug_assert!(left <= 250, "left must be 0-250");
-	debug_assert!(right <= 250, "right must be 0-250");
-
-	let code = PUA_START + left as u32 * LEVELS as u32 + right as u32;
-	char::from_u32(code).expect("valid codepoint")
-}
-
 /// Decode a Unicode codepoint back to two bar values
 pub fn decode_bars(c: char) -> (u8, u8) {
 	let code = c as u32 - PUA_START;
@@ -20,7 +11,6 @@ pub fn decode_bars(c: char) -> (u8, u8) {
 	let right = (code % LEVELS as u32) as u8;
 	(left, right)
 }
-
 /// Generate the FillLevels TTF font file
 pub fn generate_font(output: &Path) -> std::io::Result<()> {
 	let glyph_script = format!(
@@ -61,6 +51,14 @@ for left in range(LEVELS):
 	);
 
 	crate::fontforge::generate_font("FillLevels", output, &glyph_script)
+}
+/// Encode two bar values (0-250 each) into a Unicode codepoint in PUA-A (Plane 15)
+pub(crate) fn encode_bars(left: u8, right: u8) -> char {
+	debug_assert!(left <= 250, "left must be 0-250");
+	debug_assert!(right <= 250, "right must be 0-250");
+
+	let code = PUA_START + left as u32 * LEVELS as u32 + right as u32;
+	char::from_u32(code).expect("valid codepoint")
 }
 
 #[cfg(test)]

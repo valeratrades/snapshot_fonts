@@ -1,9 +1,10 @@
+#![feature(default_field_values)]
 pub mod candles;
 pub mod fill_levels;
 mod fontforge;
 
-pub use candles::{CANDLE_GLYPH_COUNT, CANDLE_PUA_START, CANDLE_SIZE, Candle, SnapshotCandles, decode_candle, encode_candle, generate_candle_font};
-pub use fill_levels::{LEVELS, PUA_START, decode_bars, encode_bars, generate_font};
+pub use candles::{CANDLE_GLYPH_COUNT, CANDLE_PUA_START, CANDLE_SIZE, Candle, SnapshotCandles, decode_candle, generate_candle_font};
+pub use fill_levels::{LEVELS, PUA_START, decode_bars, generate_font};
 
 /// Standard Unicode block characters for fallback mode (8 levels)
 const FALLBACK_BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
@@ -12,115 +13,18 @@ const FALLBACK_BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆
 // Snapshot plotting - uses FillLevels font (251 levels) or fallback (8 levels)
 // ============================================================================
 
-static SINGLE_PLOT_WIDTH: usize = 90;
-static SINGLE_PLOT_HEIGHT: usize = 12;
-
-struct PlotData {
-	scale: f64,
-	offset: f64,
-	levels_per_row: usize,
-	use_font: bool,
-}
-
-impl PlotData {
-	fn new(min_val: f64, max_val: f64, height: usize, use_font: bool) -> Self {
-		// Font: 251 levels (0-250), Fallback: 9 levels (0-8)
-		let levels_per_row = if use_font { 251 } else { 9 };
-		let max_level = levels_per_row - 1;
-		let data_range = max_val - min_val;
-		// Use (height * max_level) so max value maps exactly to full bar
-		let plot_range = (height * max_level) as f64;
-		let scale = plot_range / data_range;
-		let offset = min_val * scale;
-		PlotData {
-			scale,
-			offset,
-			levels_per_row,
-			use_font,
-		}
-	}
-
-	fn get_level(&self, val: f64, row: usize) -> u8 {
-		let scaled_val = val * self.scale - self.offset;
-		// Max index: 250 for font, 8 for fallback
-		let max_level = self.levels_per_row - 1;
-		(scaled_val - row as f64 * max_level as f64).clamp(0.0, max_level as f64) as u8
-	}
-
-	fn levels_to_char(&self, left: u8, right: u8) -> char {
-		if self.use_font {
-			encode_bars(left, right)
-		} else {
-			FALLBACK_BLOCKS[left.max(right) as usize]
-		}
-	}
-
-	fn empty_char(&self) -> char {
-		if self.use_font { encode_bars(0, 0) } else { ' ' }
-	}
-
-	/// Horizontal samples per character (2 for font mode, 1 for fallback)
-	fn samples_per_char(&self) -> usize {
-		if self.use_font { 2 } else { 1 }
-	}
-
-	/// Raise by the smallest step
-	fn raise_plot(&mut self) {
-		self.offset -= 1.0;
-	}
-}
-
-#[derive(Clone, Debug, Default)]
+#[derive(bon::Builder, Clone, Debug, Default)]
 pub struct SnapshotP {
 	prices: Vec<f64>,
 	secondary_pane: Option<Vec<Option<f64>>>,
+	#[builder(default = SINGLE_PLOT_WIDTH)]
 	width: usize,
+	#[builder(default = SINGLE_PLOT_HEIGHT)]
 	height: usize,
+	#[builder(default)]
 	fallback: bool,
 }
-
 impl SnapshotP {
-	pub fn build<T: Into<f64> + Copy>(prices: &[T]) -> Self {
-		SnapshotP {
-			prices: prices.iter().map(|x| (*x).into()).collect(),
-			secondary_pane: None,
-			width: SINGLE_PLOT_WIDTH,
-			height: SINGLE_PLOT_HEIGHT,
-			fallback: false,
-		}
-	}
-
-	/// Use fallback mode with standard Unicode block characters (8 levels) instead of FillLevels font (251 levels)
-	pub fn fallback(self, fallback: bool) -> Self {
-		SnapshotP { fallback, ..self }
-	}
-
-	/// Height is always 2/5 that of the main pane
-	pub fn secondary_pane_optional<T: Into<f64> + Copy>(self, secondary_pane: Vec<Option<T>>) -> Self {
-		SnapshotP {
-			secondary_pane: Some(secondary_pane.iter().map(|x| x.map(|x| x.into())).collect()),
-			..self
-		}
-	}
-
-	/// Height is always 2/5 that of the main pane
-	pub fn secondary_pane<T: Into<f64> + Copy>(self, secondary_pane: Vec<T>) -> Self {
-		SnapshotP {
-			secondary_pane: Some(secondary_pane.iter().map(|x| Some((*x).into())).collect()),
-			..self
-		}
-	}
-
-	/// Default width is `90`
-	pub fn width(self, width: usize) -> Self {
-		SnapshotP { width, ..self }
-	}
-
-	/// Set height of the main pane. Secondary pane's height is automatically determined. Default height is `12`
-	pub fn height_main_pane(self, height: usize) -> Self {
-		SnapshotP { height, ..self }
-	}
-
 	/// # Panics
 	/// Meant to be used only in tests, so if any input params are incorrect we panic.
 	pub fn draw(self) -> String {
@@ -147,8 +51,8 @@ impl SnapshotP {
 
 		let min_step = (max_val - min_val) / 100.0;
 		let f_len = min_step.to_string().split('.').collect::<Vec<&str>>()[1].chars().take_while(|&c| c == '0').count() + 1;
-		let max_str = format!("{:.f_len$}", max_val).trim_end_matches(".0").to_string();
-		let min_str = format!("{:.f_len$}", min_val).trim_end_matches(".0").to_string();
+		let max_str = format!("{max_val:.f_len$}").trim_end_matches(".0").to_string();
+		let min_str = format!("{min_val:.f_len$}").trim_end_matches(".0").to_string();
 		let side_panel_width = max_str.len().max(min_str.len());
 		let mut side_panel = String::with_capacity(height * side_panel_width);
 		for i in 0..height {
@@ -220,8 +124,8 @@ impl SnapshotP {
 
 		let min_step = (max_val - min_val) / 100.0;
 		let f_len = min_step.to_string().split('.').collect::<Vec<&str>>()[1].chars().take_while(|&c| c == '0').count() + 1;
-		let max_str = format!("{:.f_len$}", max_val).trim_end_matches(".0").to_string();
-		let min_str = format!("{:.f_len$}", min_val).trim_end_matches(".0").to_string();
+		let max_str = format!("{max_val:.f_len$}").trim_end_matches(".0").to_string();
+		let min_str = format!("{min_val:.f_len$}").trim_end_matches(".0").to_string();
 		let side_panel_width = max_str.len().max(min_str.len());
 		let mut side_panel = String::with_capacity(height * side_panel_width);
 		for i in 0..height {
@@ -267,11 +171,6 @@ impl SnapshotP {
 	}
 }
 
-fn join_str_blocks_v(left: String, right: String) -> String {
-	assert_eq!(left.split('\n').count(), right.split('\n').count());
-	left.lines().zip(right.lines()).map(|(l, r)| format!("{}{}", l, r)).collect::<Vec<String>>().join("\n")
-}
-
 /// # Panics
 /// if ordinals on orders are outside of prices or not ascending.
 ///
@@ -294,7 +193,69 @@ pub fn snapshot_plot_orders<T: Into<f64> + Copy>(prices: &[T], orders: &[(usize,
 	}
 	order_points.extend((last_order.0..prices.len()).map(|_| last_order.1));
 
-	SnapshotP::build(&prices).secondary_pane_optional(order_points).fallback(fallback).draw()
+	SnapshotP::builder().prices(prices).secondary_pane(order_points).fallback(fallback).build().draw()
+}
+static SINGLE_PLOT_WIDTH: usize = 90;
+static SINGLE_PLOT_HEIGHT: usize = 12;
+
+struct PlotData {
+	scale: f64,
+	offset: f64,
+	levels_per_row: usize,
+	use_font: bool,
+}
+
+impl PlotData {
+	fn new(min_val: f64, max_val: f64, height: usize, use_font: bool) -> Self {
+		// Font: 251 levels (0-250), Fallback: 9 levels (0-8)
+		let levels_per_row = if use_font { 251 } else { 9 };
+		let max_level = levels_per_row - 1;
+		let data_range = max_val - min_val;
+		// Use (height * max_level) so max value maps exactly to full bar
+		let plot_range = (height * max_level) as f64;
+		let scale = plot_range / data_range;
+		let offset = min_val * scale;
+		PlotData {
+			scale,
+			offset,
+			levels_per_row,
+			use_font,
+		}
+	}
+
+	fn get_level(&self, val: f64, row: usize) -> u8 {
+		let scaled_val = val * self.scale - self.offset;
+		// Max index: 250 for font, 8 for fallback
+		let max_level = self.levels_per_row - 1;
+		(scaled_val - row as f64 * max_level as f64).clamp(0.0, max_level as f64) as u8
+	}
+
+	fn levels_to_char(&self, left: u8, right: u8) -> char {
+		if self.use_font {
+			encode_bars(left, right)
+		} else {
+			FALLBACK_BLOCKS[left.max(right) as usize]
+		}
+	}
+
+	fn empty_char(&self) -> char {
+		if self.use_font { encode_bars(0, 0) } else { ' ' }
+	}
+
+	/// Horizontal samples per character (2 for font mode, 1 for fallback)
+	fn samples_per_char(&self) -> usize {
+		if self.use_font { 2 } else { 1 }
+	}
+
+	/// Raise by the smallest step
+	fn raise_plot(&mut self) {
+		self.offset -= 1.0;
+	}
+}
+
+fn join_str_blocks_v(left: String, right: String) -> String {
+	assert_eq!(left.split('\n').count(), right.split('\n').count());
+	left.lines().zip(right.lines()).map(|(l, r)| format!("{l}{r}")).collect::<Vec<String>>().join("\n")
 }
 
 #[cfg(test)]
@@ -308,7 +269,7 @@ mod tests {
 	#[test]
 	fn test_snapshot_plot_p() {
 		let data = laplace_random_walk(100.0, 1000, 0.1, 0.0, Some(42));
-		let plot_with_fallback = SnapshotP::build(&data).fallback(true).draw();
+		let plot_with_fallback = SnapshotP::builder().prices(data.clone()).fallback(true).build().draw();
 
 		assert_snapshot!(plot_with_fallback, @r"
 		                                                                    ▂▃▄▃                  103.50
@@ -325,7 +286,7 @@ mod tests {
 		███████████▇█▇▇███████████████████████████████████████████████████████████████████████████98.73
 		");
 
-		let plot_no_fallback = SnapshotP::build(&data).fallback(false).draw();
+		let plot_no_fallback = SnapshotP::builder().prices(data).fallback(false).build().draw();
 		assert_snapshot!(plot_no_fallback, @r"
 		󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󳎶󶅇󶭞󴞪󰧥󰧲󰧥󰨫󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥103.50
 		󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󵾊󰧥󰩌󿿽󿿽󿿽󿿘󿌯󻭛󱨃󻊈󼔁󸎂󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥󰧥      
