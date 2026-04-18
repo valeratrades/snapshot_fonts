@@ -9,7 +9,6 @@ pub const CANDLE_SIZE: u8 = 11;
 /// - high_offset=1..=10, height fills to bottom (wick goes below): 10 options
 ///
 /// Total: 21
-pub const NAKED_WICK_COUNT: u32 = 21;
 /// Total number of candle glyphs:
 /// - 1 empty
 /// - 52416 regular (with body)
@@ -289,8 +288,34 @@ impl SnapshotCandles {
 	}
 }
 
+/// Generate the glyph script with all geometry precomputed in Rust
+pub fn generate_glyph_script() -> String {
+	let glyphs = generate_all_glyphs();
+	glyphs.iter().map(|g| g.as_python()).collect::<Vec<_>>().join("\n")
+}
+/// Generate the Candles TTF font file
+/// Each glyph represents a candlestick with:
+/// - Horizontal space split in 3: left wick area, body (middle 1/3), right wick area
+/// - Wick is drawn in the center third
+/// - Body is drawn wider, covering the full width
+/// - If body_size == 0 (doji), body is drawn as 1/32 of char height
+///
+/// Encoding order (matching Rust encode_candle):
+/// - Index 0: empty candle
+/// - For each height h (0..=SIZE):
+///   - For each placement p (0..=SIZE):
+///     - For each body_start (0..=h):
+///       - For each body_size (0..=(h-body_start)):
+///         - For each wick_above (0..body_start):
+///           - For each wick_below (0..=(h-body_start-body_size)):
+///             - One glyph
+pub fn generate_candle_font(output: &Path) -> std::io::Result<()> {
+	let glyph_script = generate_glyph_script();
+	crate::fontforge::generate_font("Candles", output, &glyph_script)
+}
 /// Decode a Unicode codepoint back to a Candle
-pub fn decode_candle(c: char) -> Candle {
+#[cfg(test)]
+fn decode_candle(c: char) -> Candle {
 	let index = c as u32 - CANDLE_PUA_START;
 
 	// Index 0 is empty
@@ -370,31 +395,6 @@ pub fn decode_candle(c: char) -> Candle {
 	}
 
 	Candle::new(high_offset as u8, height as u8, body_offset as i8, body_size as i8)
-}
-/// Generate the glyph script with all geometry precomputed in Rust
-pub fn generate_glyph_script() -> String {
-	let glyphs = generate_all_glyphs();
-	glyphs.iter().map(|g| g.as_python()).collect::<Vec<_>>().join("\n")
-}
-/// Generate the Candles TTF font file
-/// Each glyph represents a candlestick with:
-/// - Horizontal space split in 3: left wick area, body (middle 1/3), right wick area
-/// - Wick is drawn in the center third
-/// - Body is drawn wider, covering the full width
-/// - If body_size == 0 (doji), body is drawn as 1/32 of char height
-///
-/// Encoding order (matching Rust encode_candle):
-/// - Index 0: empty candle
-/// - For each height h (0..=SIZE):
-///   - For each placement p (0..=SIZE):
-///     - For each body_start (0..=h):
-///       - For each body_size (0..=(h-body_start)):
-///         - For each wick_above (0..body_start):
-///           - For each wick_below (0..=(h-body_start-body_size)):
-///             - One glyph
-pub fn generate_candle_font(output: &Path) -> std::io::Result<()> {
-	let glyph_script = generate_glyph_script();
-	crate::fontforge::generate_font("Candles", output, &glyph_script)
 }
 /// A rectangle defined by its corners
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
