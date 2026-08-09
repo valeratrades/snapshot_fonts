@@ -45,7 +45,7 @@ for left in range(LEVELS):
 
 	crate::fontforge::generate_font("FillLevels", output, &glyph_script)
 }
-#[derive(bon::Builder, Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, bon::Builder)]
 pub struct SnapshotP {
 	prices: Vec<f64>,
 	secondary_pane: Option<Vec<Option<f64>>>,
