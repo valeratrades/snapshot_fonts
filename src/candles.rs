@@ -29,7 +29,7 @@ const BODY_RIGHT: i32 = GLYPH_WIDTH;
 const LEVEL_HEIGHT: i32 = LINE_HEIGHT / CANDLE_SIZE as i32;
 const DOJI_HEIGHT: i32 = LINE_HEIGHT / 32;
 
-use v_utils::trades::Ohlc;
+use trading_data_core::Ohlc;
 
 const DEFAULT_WIDTH: usize = 90;
 const DEFAULT_HEIGHT: usize = 12;
@@ -161,7 +161,7 @@ impl Candle {
 }
 
 /// Candlestick chart snapshot
-#[derive(bon::Builder, Clone, Debug)]
+#[derive(Clone, Debug, bon::Builder)]
 pub struct SnapshotCandles {
 	ohlcs: Vec<Ohlc>,
 	#[builder(default = DEFAULT_WIDTH)]
@@ -174,7 +174,7 @@ impl SnapshotCandles {
 	pub fn from_prices<T: Into<f64> + Copy>(prices: &[T]) -> Self {
 		let prices: Vec<f64> = prices.iter().map(|p| (*p).into()).collect();
 		let step = (prices.len() / DEFAULT_WIDTH).max(1);
-		let ohlcs = v_utils::trades::mock_p_to_ohlc(&prices, step);
+		let ohlcs = trading_data_core::mock_p_to_ohlc(&prices, step);
 		Self::builder().ohlcs(ohlcs).build()
 	}
 
