@@ -422,7 +422,7 @@ struct CandleGlyph {
 impl CandleGlyph {
 	fn as_python(&self) -> String {
 		let mut lines = Vec::new();
-		lines.push(format!("g=font.createChar({});g.width={GLYPH_WIDTH}", self.char_code));
+		lines.push(format!("g=font.createChar({})", self.char_code));
 
 		if self.wick.is_some() || self.body.is_some() {
 			lines.push("p=g.glyphPen()".to_string());
@@ -443,6 +443,7 @@ impl CandleGlyph {
 
 			lines.push("p=None".to_string());
 		}
+		lines.push(format!("g.width={GLYPH_WIDTH}")); // drawing through the pen resets it to the em
 
 		lines.join("\n")
 	}

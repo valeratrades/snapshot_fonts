@@ -54,6 +54,10 @@ if full_bar_code in cmap:
     if g.xMax != 1233:
         errors.append(f"full bar xMax: expected 1233, got {{g.xMax}}")
 
+off_grid = sorted({{tt['hmtx'][g][0] for g in cmap.values()}} - {{1233}})
+if off_grid:
+    errors.append(f"advance widths: expected only 1233, also got {{off_grid}}")
+
 if errors:
     for e in errors:
         print(e, file=sys.stderr)

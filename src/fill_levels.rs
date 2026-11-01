@@ -16,7 +16,6 @@ for left in range(LEVELS):
     for right in range(LEVELS):
         char_code = PUA_START + left * LEVELS + right
         glyph = font.createChar(char_code)
-        glyph.width = GLYPH_WIDTH
 
         # Draw from -HHEA_DESCENT to scaled height
         # Level 0 = empty, Level 250 = full bar from -483 to 1901
@@ -38,6 +37,7 @@ for left in range(LEVELS):
             pen.lineTo((HALF_WIDTH, right_height))
             pen.closePath()
         pen = None
+        glyph.width = GLYPH_WIDTH  # drawing through the pen resets it to the em
 "#,
 		levels = LEVELS,
 		pua_start = PUA_START,
